@@ -15,7 +15,7 @@ use core_foundation::{
 use core_graphics::{
     base::{kCGImageAlphaPremultipliedLast, CGGlyph},
     color_space::CGColorSpace,
-    context::CGContext,
+    context::{CGBlendMode, CGContext},
     display::CGPoint,
 };
 use core_text::{
@@ -399,10 +399,13 @@ impl MacTextSystemState {
             let subpixel_shift = params
                 .subpixel_variant
                 .map(|v| v as f32 / SUBPIXEL_VARIANTS as f32);
-            cx.set_allows_font_subpixel_positioning(true);
-            cx.set_should_subpixel_position_fonts(true);
+            cx.set_allows_font_subpixel_positioning(false);
+            cx.set_should_subpixel_position_fonts(false);
             cx.set_allows_font_subpixel_quantization(false);
             cx.set_should_subpixel_quantize_fonts(false);
+            cx.set_allows_antialiasing(true);
+            cx.set_allows_font_smoothing(false);
+
             self.fonts[params.font_id.0]
                 .native_font()
                 .clone_with_font_size(f32::from(params.font_size) as CGFloat)
