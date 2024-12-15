@@ -2,25 +2,18 @@ use client::telemetry::Telemetry;
 use fs::Fs;
 use fuzzy::{match_strings, StringMatch, StringMatchCandidate};
 use gpui::{
-    actions, impl_actions, AppContext, DismissEvent, EventEmitter, FocusableView, Render,
-    UpdateGlobal, View, ViewContext, VisualContext, WeakView,
+    actions, AppContext, DismissEvent, EventEmitter, FocusableView, Render, UpdateGlobal, View,
+    ViewContext, VisualContext, WeakView,
 };
 use picker::{Picker, PickerDelegate};
-use serde::Deserialize;
 use settings::{update_settings_file, SettingsStore};
 use std::sync::Arc;
 use theme::{Appearance, Theme, ThemeMeta, ThemeRegistry, ThemeSettings};
 use ui::{prelude::*, v_flex, ListItem, ListItemSpacing};
 use util::ResultExt;
 use workspace::{ui::HighlightedLabel, ModalView, Workspace};
+use zed_actions::theme_selector::Toggle;
 
-#[derive(PartialEq, Clone, Default, Debug, Deserialize)]
-pub struct Toggle {
-    /// A list of theme names to filter the theme selector down to.
-    pub themes_filter: Option<Vec<String>>,
-}
-
-impl_actions!(theme_selector, [Toggle]);
 actions!(theme_selector, [Reload]);
 
 pub fn init(cx: &mut AppContext) {
@@ -237,11 +230,7 @@ impl PickerDelegate for ThemeSelectorDelegate {
             .themes
             .iter()
             .enumerate()
-            .map(|(id, meta)| StringMatchCandidate {
-                id,
-                char_bag: meta.name.as_ref().into(),
-                string: meta.name.to_string(),
-            })
+            .map(|(id, meta)| StringMatchCandidate::new(id, &meta.name))
             .collect::<Vec<_>>();
 
         cx.spawn(|this, mut cx| async move {
@@ -292,7 +281,7 @@ impl PickerDelegate for ThemeSelectorDelegate {
             ListItem::new(ix)
                 .inset(true)
                 .spacing(ListItemSpacing::Sparse)
-                .selected(selected)
+                .toggle_state(selected)
                 .child(HighlightedLabel::new(
                     theme_match.string.clone(),
                     theme_match.positions.clone(),

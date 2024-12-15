@@ -18,22 +18,12 @@ pub struct StringMatchCandidate {
     pub char_bag: CharBag,
 }
 
-impl Match for StringMatch {
-    fn score(&self) -> f64 {
-        self.score
-    }
-
-    fn set_positions(&mut self, positions: Vec<usize>) {
-        self.positions = positions;
-    }
-}
-
 impl StringMatchCandidate {
-    pub fn new(id: usize, string: String) -> Self {
+    pub fn new(id: usize, string: &str) -> Self {
         Self {
             id,
-            char_bag: CharBag::from(string.as_str()),
-            string,
+            string: string.into(),
+            char_bag: string.into(),
         }
     }
 }
@@ -56,14 +46,38 @@ pub struct StringMatch {
     pub string: String,
 }
 
+impl Match for StringMatch {
+    fn score(&self) -> f64 {
+        self.score
+    }
+
+    fn set_positions(&mut self, positions: Vec<usize>) {
+        self.positions = positions;
+    }
+}
+
 impl StringMatch {
     pub fn ranges(&self) -> impl '_ + Iterator<Item = Range<usize>> {
         let mut positions = self.positions.iter().peekable();
         iter::from_fn(move || {
             if let Some(start) = positions.next().copied() {
+                if start >= self.string.len() {
+                    log::error!(
+                        "Invariant violation: Index {start} out of range in string {:?}",
+                        self.string
+                    );
+                    return None;
+                }
                 let mut end = start + self.char_len_at_index(start);
                 while let Some(next_start) = positions.peek() {
                     if end == **next_start {
+                        if end >= self.string.len() {
+                            log::error!(
+                                "Invariant violation: Index {end} out of range in string {:?}",
+                                self.string
+                            );
+                            return None;
+                        }
                         end += self.char_len_at_index(end);
                         positions.next();
                     } else {

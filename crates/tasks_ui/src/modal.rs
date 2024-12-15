@@ -3,63 +3,22 @@ use std::sync::Arc;
 use crate::active_item_selection_properties;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    impl_actions, rems, Action, AnyElement, AppContext, DismissEvent, EventEmitter, FocusableView,
+    rems, Action, AnyElement, AppContext, DismissEvent, EventEmitter, FocusableView,
     InteractiveElement, Model, ParentElement, Render, SharedString, Styled, Subscription, Task,
     View, ViewContext, VisualContext, WeakView,
 };
 use picker::{highlighted_match_with_paths::HighlightedText, Picker, PickerDelegate};
 use project::{task_store::TaskStore, TaskSourceKind};
-use task::{ResolvedTask, TaskContext, TaskId, TaskTemplate};
+use task::{ResolvedTask, TaskContext, TaskTemplate};
 use ui::{
     div, h_flex, v_flex, ActiveTheme, Button, ButtonCommon, ButtonSize, Clickable, Color,
     FluentBuilder as _, Icon, IconButton, IconButtonShape, IconName, IconSize, IntoElement,
-    KeyBinding, LabelSize, ListItem, ListItemSpacing, RenderOnce, Selectable, Tooltip,
+    KeyBinding, LabelSize, ListItem, ListItemSpacing, RenderOnce, Toggleable, Tooltip,
     WindowContext,
 };
 use util::ResultExt;
 use workspace::{tasks::schedule_resolved_task, ModalView, Workspace};
-
-use serde::Deserialize;
-
-/// Spawn a task with name or open tasks modal
-#[derive(PartialEq, Clone, Deserialize, Default)]
-pub struct Spawn {
-    #[serde(default)]
-    /// Name of the task to spawn.
-    /// If it is not set, a modal with a list of available tasks is opened instead.
-    /// Defaults to None.
-    pub task_name: Option<String>,
-}
-
-impl Spawn {
-    pub fn modal() -> Self {
-        Self { task_name: None }
-    }
-}
-
-/// Rerun last task
-#[derive(PartialEq, Clone, Deserialize, Default)]
-pub struct Rerun {
-    /// Controls whether the task context is reevaluated prior to execution of a task.
-    /// If it is not, environment variables such as ZED_COLUMN, ZED_FILE are gonna be the same as in the last execution of a task
-    /// If it is, these variables will be updated to reflect current state of editor at the time task::Rerun is executed.
-    /// default: false
-    #[serde(default)]
-    pub reevaluate_context: bool,
-    /// Overrides `allow_concurrent_runs` property of the task being reran.
-    /// Default: null
-    #[serde(default)]
-    pub allow_concurrent_runs: Option<bool>,
-    /// Overrides `use_new_terminal` property of the task being reran.
-    /// Default: null
-    #[serde(default)]
-    pub use_new_terminal: Option<bool>,
-
-    /// If present, rerun the task with this ID, otherwise rerun the last task.
-    pub task_id: Option<TaskId>,
-}
-
-impl_actions!(task, [Rerun, Spawn]);
+pub use zed_actions::{Rerun, Spawn};
 
 /// A modal used to spawn new tasks.
 pub(crate) struct TasksModalDelegate {
@@ -109,7 +68,7 @@ impl TasksModalDelegate {
         };
         Some((
             source_kind,
-            new_oneshot.resolve_task(&id_base, &self.task_context)?,
+            new_oneshot.resolve_task(&id_base, Default::default(), &self.task_context)?,
         ))
     }
 
@@ -420,7 +379,7 @@ impl PickerDelegate for TasksModalDelegate {
                     };
                     item
                 })
-                .selected(selected)
+                .toggle_state(selected)
                 .child(highlighted_location.render(cx)),
         )
     }
@@ -557,7 +516,7 @@ fn string_match_candidates<'a>(
         .map(|(index, (_, candidate))| StringMatchCandidate {
             id: index,
             char_bag: candidate.resolved_label.chars().collect(),
-            string: candidate.display_label().to_owned(),
+            string: candidate.display_label().into(),
         })
         .collect()
 }
@@ -725,6 +684,7 @@ mod tests {
 
         cx.dispatch_action(Spawn {
             task_name: Some("example task".to_string()),
+            target: None,
         });
         let tasks_picker = workspace.update(cx, |workspace, cx| {
             workspace

@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
-use extension::{KeyValueStoreDelegate, WorktreeDelegate};
+use extension::{ExtensionLanguageServerProxy, KeyValueStoreDelegate, WorktreeDelegate};
 use futures::{io::BufReader, FutureExt as _};
 use futures::{lock::Mutex, AsyncReadExt};
 use language::LanguageName;
@@ -22,7 +22,6 @@ use wasmtime::component::{Linker, Resource};
 use super::latest;
 
 pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 1, 0);
-pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(0, 1, 0);
 
 wasmtime::component::bindgen!({
     async: true,
@@ -496,8 +495,9 @@ impl ExtensionImports for WasmState {
         };
 
         self.host
-            .registration_hooks
-            .update_lsp_status(::lsp::LanguageServerName(server_name.into()), status);
+            .proxy
+            .update_language_server_status(::lsp::LanguageServerName(server_name.into()), status);
+
         Ok(())
     }
 

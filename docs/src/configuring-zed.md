@@ -133,6 +133,48 @@ Define extensions which should be installed (`true`) or never installed (`false`
 }
 ```
 
+## Restore on Startup
+
+- Description: Controls session restoration on startup.
+- Setting: `restore_on_startup`
+- Default: `last_session`
+
+**Options**
+
+1. Restore all workspaces that were open when quitting Zed:
+
+```json
+{
+  "restore_on_startup": "last_session"
+}
+```
+
+2. Restore the workspace that was closed last:
+
+```json
+{
+  "restore_on_startup": "last_workspace"
+}
+```
+
+3. Always start with an empty editor:
+
+```json
+{
+  "restore_on_startup": "none"
+}
+```
+
+## Autoscroll on Clicks
+
+- Description: Whether to scroll when clicking near the edge of the visible text area.
+- Setting: `autoscroll_on_clicks`
+- Default: `false`
+
+**Options**
+
+`boolean` values
+
 ## Auto Update
 
 - Description: Whether or not to automatically check for updates.
@@ -425,6 +467,12 @@ List of `string` values
 "current_line_highlight": "all"
 ```
 
+## LSP Highlight Debounce
+
+- Description: The debounce delay before querying highlights from the language server based on the current cursor location.
+- Setting: `lsp_highlight_debounce`
+- Default: `75`
+
 ## Cursor Blink
 
 - Description: Whether or not the cursor blinks.
@@ -624,7 +672,8 @@ List of `string` values
   "close_position": "right",
   "file_icons": false,
   "git_status": false,
-  "activate_on_close": "history"
+  "activate_on_close": "history",
+  "always_show_close_button": false
 },
 ```
 
@@ -680,13 +729,27 @@ List of `string` values
 }
 ```
 
-2. Activate the neighbour tab (prefers the right one, if present):
+2. Activate the right neighbour tab if present:
 
 ```json
 {
   "activate_on_close": "neighbour"
 }
 ```
+
+3. Activate the left neighbour tab if present:
+
+```json
+{
+  "activate_on_close": "left_neighbour"
+}
+```
+
+### Always show the close button
+
+- Description: Whether to always show the close button on tabs.
+- Setting: `always_show_close_button`
+- Default: `false`
 
 ## Editor Toolbar
 
@@ -977,6 +1040,7 @@ The result is still `)))` and not `))))))`, which is what it would be by default
   "**/.git",
   "**/.svn",
   "**/.hg",
+  "**/.jj",
   "**/CVS",
   "**/.DS_Store",
   "**/Thumbs.db",
@@ -1318,19 +1382,19 @@ To override settings for a language, add an entry for that languages name to the
 
 The following settings can be overridden for each specific language:
 
-- `enable_language_server`
-- `ensure_final_newline_on_save`
-- `format_on_save`
-- `formatter`
-- `hard_tabs`
-- `preferred_line_length`
-- `remove_trailing_whitespace_on_save`
-- `show_inline_completions`
-- `show_whitespaces`
-- `soft_wrap`
-- `tab_size`
-- `use_autoclose`
-- `always_treat_brackets_as_autoclosed`
+- [`enable_language_server`](#enable-language-server)
+- [`ensure_final_newline_on_save`](#ensure-final-newline-on-save)
+- [`format_on_save`](#format-on-save)
+- [`formatter`](#formatter)
+- [`hard_tabs`](#hard-tabs)
+- [`preferred_line_length`](#preferred-line-length)
+- [`remove_trailing_whitespace_on_save`](#remove-trailing-whitespace-on-save)
+- [`show_inline_completions`](#show-inline-completions)
+- [`show_whitespaces`](#show-whitespaces)
+- [`soft_wrap`](#soft-wrap)
+- [`tab_size`](#tab-size)
+- [`use_autoclose`](#use-autoclose)
+- [`always_treat_brackets_as_autoclosed`](#always-treat-brackets-as-autoclosed)
 
 These values take in the same options as the root-level settings with the same name.
 
@@ -1416,6 +1480,14 @@ Or to set a `socks5` proxy:
 
 `boolean` values
 
+## File Finder
+
+### Modal Max Width
+
+- Description: Max-width of the file finder modal. It can take one of these values: `small`, `medium`, `large`, `xlarge`, and `full`.
+- Setting: `max_modal_width`
+- Default: `small`
+
 ## Preferred Line Length
 
 - Description: The column at which to soft-wrap lines, for buffers where soft-wrap is enabled.
@@ -1490,16 +1562,6 @@ Or to set a `socks5` proxy:
 **Options**
 
 `boolean` values
-
-## Completion Documentation Debounce Delay
-
-- Description: The debounce delay before re-querying the language server for completion documentation when not included in original completion list.
-- Setting: `completion_documentation_secondary_query_debounce`
-- Default: `300` ms
-
-**Options**
-
-`integer` values
 
 ## Show Inline Completions
 
@@ -1620,7 +1682,7 @@ List of `integer` column numbers
     "button": false,
     "shell": {},
     "toolbar": {
-      "title": true
+      "breadcrumbs": true
     },
     "working_directory": "current_project_directory"
   }
@@ -1938,7 +2000,7 @@ Disable with:
 
 ## Terminal: Toolbar
 
-- Description: Whether or not to show various elements in the terminal toolbar. It only affects terminals placed in the editor pane.
+- Description: Whether or not to show various elements in the terminal toolbar.
 - Setting: `toolbar`
 - Default:
 
@@ -1946,7 +2008,7 @@ Disable with:
 {
   "terminal": {
     "toolbar": {
-      "title": true
+      "breadcrumbs": true
     }
   }
 }
@@ -1954,7 +2016,13 @@ Disable with:
 
 **Options**
 
-At the moment, only the `title` option is available, it controls displaying of the terminal title that can be changed via `PROMPT_COMMAND`. If the title is hidden, the terminal toolbar is not displayed.
+At the moment, only the `breadcrumbs` option is available, it controls displaying of the terminal title that can be changed via `PROMPT_COMMAND`.
+
+If the terminal title is empty, the breadcrumbs won't be shown.
+
+The shell running in the terminal needs to be configured to emit the title.
+
+Example command to set the title: `echo -e "\e]2;New Title\007";`
 
 ### Terminal: Button
 

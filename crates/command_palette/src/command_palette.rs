@@ -11,7 +11,7 @@ use command_palette_hooks::{
 };
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    actions, Action, AppContext, DismissEvent, EventEmitter, FocusHandle, FocusableView, Global,
+    Action, AppContext, DismissEvent, EventEmitter, FocusHandle, FocusableView, Global,
     ParentElement, Render, Styled, Task, UpdateGlobal, View, ViewContext, VisualContext, WeakView,
 };
 use picker::{Picker, PickerDelegate};
@@ -21,9 +21,7 @@ use settings::Settings;
 use ui::{h_flex, prelude::*, v_flex, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing};
 use util::ResultExt;
 use workspace::{ModalView, Workspace, WorkspaceSettings};
-use zed_actions::OpenZedUrl;
-
-actions!(command_palette, [Toggle]);
+use zed_actions::{command_palette::Toggle, OpenZedUrl};
 
 pub fn init(cx: &mut AppContext) {
     client::init_settings(cx);
@@ -285,11 +283,7 @@ impl PickerDelegate for CommandPaletteDelegate {
                 let candidates = commands
                     .iter()
                     .enumerate()
-                    .map(|(ix, command)| StringMatchCandidate {
-                        id: ix,
-                        string: command.name.to_string(),
-                        char_bag: command.name.chars().collect(),
-                    })
+                    .map(|(ix, command)| StringMatchCandidate::new(ix, &command.name))
                     .collect::<Vec<_>>();
                 let matches = if query.is_empty() {
                     candidates
@@ -399,7 +393,7 @@ impl PickerDelegate for CommandPaletteDelegate {
             ListItem::new(ix)
                 .inset(true)
                 .spacing(ListItemSpacing::Sparse)
-                .selected(selected)
+                .toggle_state(selected)
                 .child(
                     h_flex()
                         .w_full()

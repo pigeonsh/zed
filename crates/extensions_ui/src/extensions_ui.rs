@@ -1,12 +1,6 @@
 mod components;
-mod extension_registration_hooks;
 mod extension_suggest;
 mod extension_version_selector;
-
-#[cfg(test)]
-mod extension_store_test;
-
-pub use extension_registration_hooks::ConcreteExtensionRegistrationHooks;
 
 use std::ops::DerefMut;
 use std::sync::OnceLock;
@@ -20,9 +14,9 @@ use editor::{Editor, EditorElement, EditorStyle};
 use extension_host::{ExtensionManifest, ExtensionOperation, ExtensionStore};
 use fuzzy::{match_strings, StringMatchCandidate};
 use gpui::{
-    actions, uniform_list, AppContext, EventEmitter, Flatten, FocusableView, InteractiveElement,
-    KeyContext, ParentElement, Render, Styled, Task, TextStyle, UniformListScrollHandle, View,
-    ViewContext, VisualContext, WeakView, WindowContext,
+    actions, uniform_list, Action, AppContext, ClipboardItem, EventEmitter, Flatten, FocusableView,
+    InteractiveElement, KeyContext, ParentElement, Render, Styled, Task, TextStyle,
+    UniformListScrollHandle, View, ViewContext, VisualContext, WeakView, WindowContext,
 };
 use num_format::{Locale, ToFormattedString};
 use project::DirectoryLister;
@@ -30,7 +24,7 @@ use release_channel::ReleaseChannel;
 use settings::Settings;
 use theme::ThemeSettings;
 use ui::{prelude::*, CheckboxWithLabel, ContextMenu, PopoverMenu, ToggleButton, Tooltip};
-use vim::VimModeSetting;
+use vim_mode_setting::VimModeSetting;
 use workspace::{
     item::{Item, ItemEvent},
     Workspace, WorkspaceId,
@@ -41,12 +35,12 @@ use crate::extension_version_selector::{
     ExtensionVersionSelector, ExtensionVersionSelectorDelegate,
 };
 
-actions!(zed, [Extensions, InstallDevExtension]);
+actions!(zed, [InstallDevExtension]);
 
 pub fn init(cx: &mut AppContext) {
     cx.observe_new_views(move |workspace: &mut Workspace, cx| {
         workspace
-            .register_action(move |workspace, _: &Extensions, cx| {
+            .register_action(move |workspace, _: &zed_actions::Extensions, cx| {
                 let existing = workspace
                     .active_pane()
                     .read(cx)
@@ -257,14 +251,13 @@ impl ExtensionsPage {
             .collect::<Vec<_>>();
         if !themes.is_empty() {
             workspace
-                .update(cx, |workspace, cx| {
-                    theme_selector::toggle(
-                        workspace,
-                        &theme_selector::Toggle {
+                .update(cx, |_workspace, cx| {
+                    cx.dispatch_action(
+                        zed_actions::theme_selector::Toggle {
                             themes_filter: Some(themes),
-                        },
-                        cx,
-                    )
+                        }
+                        .boxed_clone(),
+                    );
                 })
                 .ok();
         }
@@ -335,11 +328,7 @@ impl ExtensionsPage {
                 let match_candidates = dev_extensions
                     .iter()
                     .enumerate()
-                    .map(|(ix, manifest)| StringMatchCandidate {
-                        id: ix,
-                        string: manifest.name.clone(),
-                        char_bag: manifest.name.as_str().into(),
-                    })
+                    .map(|(ix, manifest)| StringMatchCandidate::new(ix, &manifest.name))
                     .collect::<Vec<_>>();
 
                 let matches = match_strings(
@@ -644,13 +633,21 @@ impl ExtensionsPage {
         cx: &mut WindowContext,
     ) -> View<ContextMenu> {
         let context_menu = ContextMenu::build(cx, |context_menu, cx| {
-            context_menu.entry(
-                "Install Another Version...",
-                None,
-                cx.handler_for(this, move |this, cx| {
-                    this.show_extension_version_list(extension_id.clone(), cx)
-                }),
-            )
+            context_menu
+                .entry(
+                    "Install Another Version...",
+                    None,
+                    cx.handler_for(this, {
+                        let extension_id = extension_id.clone();
+                        move |this, cx| this.show_extension_version_list(extension_id.clone(), cx)
+                    }),
+                )
+                .entry("Copy Extension ID", None, {
+                    let extension_id = extension_id.clone();
+                    move |cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(extension_id.to_string()));
+                    }
+                })
         });
 
         context_menu
@@ -932,7 +929,7 @@ impl ExtensionsPage {
 
     fn update_settings<T: Settings>(
         &mut self,
-        selection: &Selection,
+        selection: &ToggleState,
         cx: &mut ViewContext<Self>,
         callback: impl 'static + Send + Fn(&mut T::FileContent, bool),
     ) {
@@ -941,8 +938,8 @@ impl ExtensionsPage {
             let selection = *selection;
             settings::update_settings_file::<T>(fs, cx, move |settings, _| {
                 let value = match selection {
-                    Selection::Unselected => false,
-                    Selection::Selected => true,
+                    ToggleState::Unselected => false,
+                    ToggleState::Selected => true,
                     _ => return,
                 };
 
@@ -997,9 +994,9 @@ impl ExtensionsPage {
                         "enable-vim",
                         Label::new("Enable vim mode"),
                         if VimModeSetting::get_global(cx).0 {
-                            ui::Selection::Selected
+                            ui::ToggleState::Selected
                         } else {
-                            ui::Selection::Unselected
+                            ui::ToggleState::Unselected
                         },
                         cx.listener(move |this, selection, cx| {
                             this.telemetry
@@ -1089,7 +1086,7 @@ impl Render for ExtensionsPage {
                                         ToggleButton::new("filter-all", "All")
                                             .style(ButtonStyle::Filled)
                                             .size(ButtonSize::Large)
-                                            .selected(self.filter == ExtensionFilter::All)
+                                            .toggle_state(self.filter == ExtensionFilter::All)
                                             .on_click(cx.listener(|this, _event, cx| {
                                                 this.filter = ExtensionFilter::All;
                                                 this.filter_extension_entries(cx);
@@ -1103,7 +1100,7 @@ impl Render for ExtensionsPage {
                                         ToggleButton::new("filter-installed", "Installed")
                                             .style(ButtonStyle::Filled)
                                             .size(ButtonSize::Large)
-                                            .selected(self.filter == ExtensionFilter::Installed)
+                                            .toggle_state(self.filter == ExtensionFilter::Installed)
                                             .on_click(cx.listener(|this, _event, cx| {
                                                 this.filter = ExtensionFilter::Installed;
                                                 this.filter_extension_entries(cx);
@@ -1117,7 +1114,9 @@ impl Render for ExtensionsPage {
                                         ToggleButton::new("filter-not-installed", "Not Installed")
                                             .style(ButtonStyle::Filled)
                                             .size(ButtonSize::Large)
-                                            .selected(self.filter == ExtensionFilter::NotInstalled)
+                                            .toggle_state(
+                                                self.filter == ExtensionFilter::NotInstalled,
+                                            )
                                             .on_click(cx.listener(|this, _event, cx| {
                                                 this.filter = ExtensionFilter::NotInstalled;
                                                 this.filter_extension_entries(cx);
