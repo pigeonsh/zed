@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use anyhow::Result;
 use collections::HashMap;
-use gpui::AppContext;
+use gpui::App;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsSources};
@@ -87,15 +87,15 @@ pub enum RestoreOnStartupBehavior {
 pub struct WorkspaceSettingsContent {
     /// Active pane styling settings.
     pub active_pane_modifiers: Option<ActivePanelModifiers>,
-    // Direction to split horizontally.
-    //
-    // Default: "up"
+    /// Direction to split horizontally.
+    ///
+    /// Default: "up"
     pub pane_split_direction_horizontal: Option<PaneSplitDirectionHorizontal>,
-    // Direction to split vertically.
-    //
-    // Default: "left"
+    /// Direction to split vertically.
+    ///
+    /// Default: "left"
     pub pane_split_direction_vertical: Option<PaneSplitDirectionVertical>,
-    // Centered layout related settings.
+    /// Centered layout related settings.
     pub centered_layout: Option<CenteredLayoutSettings>,
     /// Whether or not to prompt the user to confirm before closing the application.
     ///
@@ -208,7 +208,7 @@ impl Settings for WorkspaceSettings {
 
     type FileContent = WorkspaceSettingsContent;
 
-    fn load(sources: SettingsSources<Self::FileContent>, _: &mut AppContext) -> Result<Self> {
+    fn load(sources: SettingsSources<Self::FileContent>, _: &mut App) -> Result<Self> {
         sources.json_merge()
     }
 }
@@ -218,7 +218,7 @@ impl Settings for TabBarSettings {
 
     type FileContent = TabBarSettingsContent;
 
-    fn load(sources: SettingsSources<Self::FileContent>, _: &mut AppContext) -> Result<Self> {
+    fn load(sources: SettingsSources<Self::FileContent>, _: &mut App) -> Result<Self> {
         sources.json_merge()
     }
 }

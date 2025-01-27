@@ -8,9 +8,9 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use collections::{HashMap, HashSet, VecDeque};
-use gpui::{AppContext, Context as _, Model, Task};
+use gpui::{App, AppContext as _, Entity, Task};
 use itertools::Itertools;
 use language::{ContextProvider, File, Language, LanguageToolchainStore, Location};
 use settings::{parse_json_with_comments, SettingsLocation};
@@ -76,8 +76,8 @@ impl TaskSourceKind {
 }
 
 impl Inventory {
-    pub fn new(cx: &mut AppContext) -> Model<Self> {
-        cx.new_model(|_| Self::default())
+    pub fn new(cx: &mut App) -> Entity<Self> {
+        cx.new(|_| Self::default())
     }
 
     /// Pulls its task sources relevant to the worktree and the language given,
@@ -88,7 +88,7 @@ impl Inventory {
         file: Option<Arc<dyn File>>,
         language: Option<Arc<Language>>,
         worktree: Option<WorktreeId>,
-        cx: &AppContext,
+        cx: &App,
     ) -> Vec<(TaskSourceKind, TaskTemplate)> {
         let task_source_kind = language.as_ref().map(|language| TaskSourceKind::Language {
             name: language.name().0,
@@ -109,13 +109,13 @@ impl Inventory {
     /// Pulls its task sources relevant to the worktree and the language given and resolves them with the [`TaskContext`] given.
     /// Joins the new resolutions with the resolved tasks that were used (spawned) before,
     /// orders them so that the most recently used come first, all equally used ones are ordered so that the most specific tasks come first.
-    /// Deduplicates the tasks by their labels and contenxt and splits the ordered list into two: used tasks and the rest, newly resolved tasks.
+    /// Deduplicates the tasks by their labels and context and splits the ordered list into two: used tasks and the rest, newly resolved tasks.
     pub fn used_and_current_resolved_tasks(
         &self,
         worktree: Option<WorktreeId>,
         location: Option<Location>,
         task_context: &TaskContext,
-        cx: &AppContext,
+        cx: &App,
     ) -> (
         Vec<(TaskSourceKind, ResolvedTask)>,
         Vec<(TaskSourceKind, ResolvedTask)>,
@@ -184,7 +184,7 @@ impl Inventory {
                 let id_base = kind.to_id_base();
                 Some((
                     kind,
-                    task.resolve_task(&id_base, Default::default(), task_context)?,
+                    task.resolve_task(&id_base, task_context)?,
                     not_used_score,
                 ))
             })
@@ -371,17 +371,17 @@ fn task_variables_preference(task: &ResolvedTask) -> Reverse<usize> {
 
 #[cfg(test)]
 mod test_inventory {
-    use gpui::{Model, TestAppContext};
+    use gpui::{Entity, TestAppContext};
     use itertools::Itertools;
     use task::TaskContext;
     use worktree::WorktreeId;
 
     use crate::Inventory;
 
-    use super::{task_source_kind_preference, TaskSourceKind};
+    use super::TaskSourceKind;
 
     pub(super) fn task_template_names(
-        inventory: &Model<Inventory>,
+        inventory: &Entity<Inventory>,
         worktree: Option<WorktreeId>,
         cx: &mut TestAppContext,
     ) -> Vec<String> {
@@ -396,7 +396,7 @@ mod test_inventory {
     }
 
     pub(super) fn register_task_used(
-        inventory: &Model<Inventory>,
+        inventory: &Entity<Inventory>,
         task_name: &str,
         cx: &mut TestAppContext,
     ) {
@@ -409,14 +409,14 @@ mod test_inventory {
             let id_base = task_source_kind.to_id_base();
             inventory.task_scheduled(
                 task_source_kind.clone(),
-                task.resolve_task(&id_base, Default::default(), &TaskContext::default())
+                task.resolve_task(&id_base, &TaskContext::default())
                     .unwrap_or_else(|| panic!("Failed to resolve task with name {task_name}")),
             );
         });
     }
 
     pub(super) async fn list_tasks(
-        inventory: &Model<Inventory>,
+        inventory: &Entity<Inventory>,
         worktree: Option<WorktreeId>,
         cx: &mut TestAppContext,
     ) -> Vec<(TaskSourceKind, String)> {
@@ -427,41 +427,22 @@ mod test_inventory {
                 .into_iter()
                 .filter_map(|(source_kind, task)| {
                     let id_base = source_kind.to_id_base();
-                    Some((
-                        source_kind,
-                        task.resolve_task(&id_base, Default::default(), task_context)?,
-                    ))
+                    Some((source_kind, task.resolve_task(&id_base, task_context)?))
                 })
                 .map(|(source_kind, resolved_task)| (source_kind, resolved_task.resolved_label))
                 .collect()
         })
-    }
-
-    pub(super) async fn list_tasks_sorted_by_last_used(
-        inventory: &Model<Inventory>,
-        worktree: Option<WorktreeId>,
-        cx: &mut TestAppContext,
-    ) -> Vec<(TaskSourceKind, String)> {
-        let (used, current) = inventory.update(cx, |inventory, cx| {
-            inventory.used_and_current_resolved_tasks(worktree, None, &TaskContext::default(), cx)
-        });
-        let mut all = used;
-        all.extend(current);
-        all.into_iter()
-            .map(|(source_kind, task)| (source_kind, task.resolved_label))
-            .sorted_by_key(|(kind, label)| (task_source_kind_preference(kind), label.clone()))
-            .collect()
     }
 }
 
 /// A context provided that tries to provide values for all non-custom [`VariableName`] variants for a currently opened file.
 /// Applied as a base for every custom [`ContextProvider`] unless explicitly oped out.
 pub struct BasicContextProvider {
-    worktree_store: Model<WorktreeStore>,
+    worktree_store: Entity<WorktreeStore>,
 }
 
 impl BasicContextProvider {
-    pub fn new(worktree_store: Model<WorktreeStore>) -> Self {
+    pub fn new(worktree_store: Entity<WorktreeStore>) -> Self {
         Self { worktree_store }
     }
 }
@@ -472,7 +453,7 @@ impl ContextProvider for BasicContextProvider {
         location: &Location,
         _: Option<HashMap<String, String>>,
         _: Arc<dyn LanguageToolchainStore>,
-        cx: &mut AppContext,
+        cx: &mut App,
     ) -> Task<Result<TaskVariables>> {
         let buffer = location.buffer.read(cx);
         let buffer_snapshot = buffer.snapshot();
@@ -508,7 +489,7 @@ impl ContextProvider for BasicContextProvider {
         if !selected_text.trim().is_empty() {
             task_variables.insert(VariableName::SelectedText, selected_text);
         }
-        let worktree_abs_path =
+        let worktree_root_dir =
             buffer
                 .file()
                 .map(|file| file.worktree_id(cx))
@@ -516,9 +497,9 @@ impl ContextProvider for BasicContextProvider {
                     self.worktree_store
                         .read(cx)
                         .worktree_for_id(worktree_id, cx)
-                        .map(|worktree| worktree.read(cx).abs_path())
+                        .map(|worktree| worktree.read(cx).root_dir())
                 });
-        if let Some(worktree_path) = worktree_abs_path {
+        if let Some(Some(worktree_path)) = worktree_root_dir {
             task_variables.insert(
                 VariableName::WorktreeRoot,
                 worktree_path.to_string_lossy().to_string(),
@@ -572,7 +553,7 @@ impl ContextProvider for ContextProviderWithTasks {
     fn associated_tasks(
         &self,
         _: Option<Arc<dyn language::File>>,
-        _: &AppContext,
+        _: &App,
     ) -> Option<TaskTemplates> {
         Some(self.templates.clone())
     }
@@ -877,8 +858,8 @@ mod tests {
         TaskStore::init(None);
     }
 
-    pub(super) async fn resolved_task_names(
-        inventory: &Model<Inventory>,
+    async fn resolved_task_names(
+        inventory: &Entity<Inventory>,
         worktree: Option<WorktreeId>,
         cx: &mut TestAppContext,
     ) -> Vec<String> {
@@ -904,5 +885,21 @@ mod tests {
                 .collect::<Vec<_>>(),
         ))
         .unwrap()
+    }
+
+    async fn list_tasks_sorted_by_last_used(
+        inventory: &Entity<Inventory>,
+        worktree: Option<WorktreeId>,
+        cx: &mut TestAppContext,
+    ) -> Vec<(TaskSourceKind, String)> {
+        let (used, current) = inventory.update(cx, |inventory, cx| {
+            inventory.used_and_current_resolved_tasks(worktree, None, &TaskContext::default(), cx)
+        });
+        let mut all = used;
+        all.extend(current);
+        all.into_iter()
+            .map(|(source_kind, task)| (source_kind, task.resolved_label))
+            .sorted_by_key(|(kind, label)| (task_source_kind_preference(kind), label.clone()))
+            .collect()
     }
 }

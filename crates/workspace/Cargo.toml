@@ -1,8 +1,8 @@
 [package]
 name = "workspace"
 version = "0.1.0"
-edition = "2021"
-publish = false
+edition.workspace = true
+publish.workspace = true
 license = "GPL-3.0-or-later"
 
 [lints]
@@ -61,7 +61,6 @@ ui.workspace = true
 util.workspace = true
 uuid.workspace = true
 strum.workspace = true
-zed_actions.workspace = true
 
 [dev-dependencies]
 call = { workspace = true, features = ["test-support"] }

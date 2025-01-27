@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use ::util::ResultExt;
-use anyhow::Context;
+use anyhow::Context as _;
 use windows::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
@@ -16,8 +16,9 @@ use windows::Win32::{
 
 use crate::*;
 
-pub(crate) const CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
-pub(crate) const CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
+pub(crate) const WM_GPUI_CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
+pub(crate) const WM_GPUI_CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
+pub(crate) const WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD: u32 = WM_USER + 3;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 const AUTO_HIDE_TASKBAR_THICKNESS_PX: i32 = 1;
@@ -47,6 +48,7 @@ pub(crate) fn handle_msg(
         WM_MOUSEMOVE => handle_mouse_move_msg(handle, lparam, wparam, state_ptr),
         WM_MOUSELEAVE => handle_mouse_leave_msg(state_ptr),
         WM_NCMOUSEMOVE => handle_nc_mouse_move_msg(handle, lparam, state_ptr),
+        WM_NCMOUSELEAVE => handle_nc_mouse_leave_msg(state_ptr),
         WM_NCLBUTTONDOWN => {
             handle_nc_mouse_down_msg(handle, MouseButton::Left, wparam, lparam, state_ptr)
         }
@@ -87,8 +89,8 @@ pub(crate) fn handle_msg(
         WM_IME_COMPOSITION => handle_ime_composition(handle, lparam, state_ptr),
         WM_SETCURSOR => handle_set_cursor(lparam, state_ptr),
         WM_SETTINGCHANGE => handle_system_settings_changed(handle, state_ptr),
-        WM_DWMCOLORIZATIONCOLORCHANGED => handle_system_theme_changed(state_ptr),
-        CURSOR_STYLE_CHANGED => handle_cursor_changed(lparam, state_ptr),
+        WM_DWMCOLORIZATIONCOLORCHANGED => handle_system_theme_changed(handle, state_ptr),
+        WM_GPUI_CURSOR_STYLE_CHANGED => handle_cursor_changed(lparam, state_ptr),
         _ => None,
     };
     if let Some(n) = handled {
@@ -146,19 +148,18 @@ fn handle_size_msg(
     // Don't resize the renderer when the window is minimized, but record that it was minimized so
     // that on restore the swap chain can be recreated via `update_drawable_size_even_if_unchanged`.
     if wparam.0 == SIZE_MINIMIZED as usize {
-        lock.is_minimized = Some(true);
+        lock.restore_from_minimized = lock.callbacks.request_frame.take();
         return Some(0);
     }
-    let may_have_been_minimized = lock.is_minimized.unwrap_or(true);
-    lock.is_minimized = Some(false);
 
     let width = lparam.loword().max(1) as i32;
     let height = lparam.hiword().max(1) as i32;
     let new_size = size(DevicePixels(width), DevicePixels(height));
     let scale_factor = lock.scale_factor;
-    if may_have_been_minimized {
+    if lock.restore_from_minimized.is_some() {
         lock.renderer
             .update_drawable_size_even_if_unchanged(new_size);
+        lock.callbacks.request_frame = lock.restore_from_minimized.take();
     } else {
         lock.renderer.update_drawable_size(new_size);
     }
@@ -243,9 +244,9 @@ fn handle_destroy_msg(handle: HWND, state_ptr: Rc<WindowsWindowStatePtr>) -> Opt
         callback();
     }
     unsafe {
-        PostMessageW(
-            None,
-            CLOSE_ONE_WINDOW,
+        PostThreadMessageW(
+            state_ptr.main_thread_id_win32,
+            WM_GPUI_CLOSE_ONE_WINDOW,
             WPARAM(state_ptr.validation_number),
             LPARAM(handle.0 as isize),
         )
@@ -313,6 +314,18 @@ fn handle_mouse_move_msg(
         return result;
     }
     Some(1)
+}
+
+fn handle_nc_mouse_leave_msg(state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
+    let mut lock = state_ptr.state.borrow_mut();
+    lock.hovered = false;
+    if let Some(mut callback) = lock.callbacks.hovered_status_change.take() {
+        drop(lock);
+        callback(false);
+        state_ptr.state.borrow_mut().callbacks.hovered_status_change = Some(callback);
+    }
+
+    Some(0)
 }
 
 fn handle_mouse_leave_msg(state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
@@ -973,6 +986,27 @@ fn handle_nc_mouse_move_msg(
     }
 
     let mut lock = state_ptr.state.borrow_mut();
+    if !lock.hovered {
+        lock.hovered = true;
+        unsafe {
+            TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE | TME_NONCLIENT,
+                hwndTrack: handle,
+                dwHoverTime: HOVER_DEFAULT,
+            })
+            .log_err()
+        };
+        if let Some(mut callback) = lock.callbacks.hovered_status_change.take() {
+            drop(lock);
+            callback(true);
+            state_ptr.state.borrow_mut().callbacks.hovered_status_change = Some(callback);
+        }
+    } else {
+        drop(lock);
+    }
+
+    let mut lock = state_ptr.state.borrow_mut();
     if let Some(mut callback) = lock.callbacks.input.take() {
         let scale_factor = lock.scale_factor;
         drop(lock);
@@ -1181,7 +1215,10 @@ fn handle_system_command(wparam: WPARAM, state_ptr: Rc<WindowsWindowStatePtr>) -
     None
 }
 
-fn handle_system_theme_changed(state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
+fn handle_system_theme_changed(
+    handle: HWND,
+    state_ptr: Rc<WindowsWindowStatePtr>,
+) -> Option<isize> {
     let mut callback = state_ptr
         .state
         .borrow_mut()
@@ -1190,6 +1227,7 @@ fn handle_system_theme_changed(state_ptr: Rc<WindowsWindowStatePtr>) -> Option<i
         .take()?;
     callback();
     state_ptr.state.borrow_mut().callbacks.appearance_changed = Some(callback);
+    set_dwm_window_appearance(handle);
     Some(0)
 }
 
