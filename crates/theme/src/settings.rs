@@ -164,6 +164,30 @@ impl ThemeSettings {
             }
         }
     }
+
+    /// Reloads the current icon theme.
+    ///
+    /// Reads the [`ThemeSettings`] to know which icon theme should be loaded.
+    pub fn reload_current_icon_theme(cx: &mut App) {
+        let mut theme_settings = ThemeSettings::get_global(cx).clone();
+
+        let active_theme = theme_settings.active_icon_theme.clone();
+        let mut icon_theme_name = active_theme.name.as_ref();
+
+        // If the selected theme doesn't exist, fall back to the default theme.
+        let theme_registry = ThemeRegistry::global(cx);
+        if theme_registry
+            .get_icon_theme(icon_theme_name)
+            .ok()
+            .is_none()
+        {
+            icon_theme_name = DEFAULT_ICON_THEME_NAME;
+        };
+
+        if let Some(_theme) = theme_settings.switch_icon_theme(icon_theme_name, cx) {
+            ThemeSettings::override_global(theme_settings, cx);
+        }
+    }
 }
 
 /// The appearance of the system.
@@ -319,9 +343,6 @@ pub struct ThemeSettingsContent {
     #[serde(default)]
     pub theme: Option<ThemeSelection>,
     /// The name of the icon theme to use.
-    ///
-    /// Currently not exposed to the user.
-    #[serde(skip)]
     #[serde(default)]
     pub icon_theme: Option<String>,
 
@@ -428,7 +449,7 @@ impl BufferLineHeight {
 }
 
 impl ThemeSettings {
-    /// Returns the [AdjustedBufferFontSize].
+    /// Returns the buffer font size.
     pub fn buffer_font_size(&self) -> Pixels {
         Self::clamp_font_size(self.buffer_font_size)
     }
@@ -489,6 +510,24 @@ impl ThemeSettings {
 
             self.active_theme = Arc::new(base_theme);
         }
+    }
+
+    /// Switches to the icon theme with the given name, if it exists.
+    ///
+    /// Returns a `Some` containing the new icon theme if it was successful.
+    /// Returns `None` otherwise.
+    pub fn switch_icon_theme(&mut self, icon_theme: &str, cx: &mut App) -> Option<Arc<IconTheme>> {
+        let themes = ThemeRegistry::default_global(cx);
+
+        let mut new_icon_theme = None;
+
+        if let Some(icon_theme) = themes.get_icon_theme(icon_theme).log_err() {
+            self.active_icon_theme = icon_theme.clone();
+            new_icon_theme = Some(icon_theme);
+            cx.refresh_windows();
+        }
+
+        new_icon_theme
     }
 }
 

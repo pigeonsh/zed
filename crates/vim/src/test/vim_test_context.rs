@@ -22,6 +22,7 @@ impl VimTestContext {
             release_channel::init(SemanticVersion::default(), cx);
             command_palette::init(cx);
             project_panel::init(Assets, cx);
+            git_ui::init(cx);
             crate::init(cx);
             search::init(cx);
         });
@@ -94,14 +95,14 @@ impl VimTestContext {
         Self { cx }
     }
 
-    pub fn update_entity<F, T, R>(&mut self, model: Entity<T>, update: F) -> R
+    pub fn update_entity<F, T, R>(&mut self, entity: Entity<T>, update: F) -> R
     where
         T: 'static,
         F: FnOnce(&mut T, &mut Window, &mut Context<T>) -> R + 'static,
     {
         let window = self.window;
         self.update_window(window, move |_, window, cx| {
-            model.update(cx, |t, cx| update(t, window, cx))
+            entity.update(cx, |t, cx| update(t, window, cx))
         })
         .unwrap()
     }
@@ -130,7 +131,7 @@ impl VimTestContext {
     }
 
     pub fn mode(&mut self) -> Mode {
-        self.update_editor(|editor, _, cx| editor.addon::<VimAddon>().unwrap().model.read(cx).mode)
+        self.update_editor(|editor, _, cx| editor.addon::<VimAddon>().unwrap().entity.read(cx).mode)
     }
 
     pub fn active_operator(&mut self) -> Option<Operator> {
@@ -138,7 +139,7 @@ impl VimTestContext {
             editor
                 .addon::<VimAddon>()
                 .unwrap()
-                .model
+                .entity
                 .read(cx)
                 .operator_stack
                 .last()
@@ -152,7 +153,7 @@ impl VimTestContext {
             self.update_editor(|editor, _window, _cx| editor.addon::<VimAddon>().cloned().unwrap());
 
         self.update(|window, cx| {
-            vim.model.update(cx, |vim, cx| {
+            vim.entity.update(cx, |vim, cx| {
                 vim.switch_mode(mode, true, window, cx);
             });
         });

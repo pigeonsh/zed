@@ -9,13 +9,14 @@ use futures::channel::mpsc;
 use futures::{select, select_biased, AsyncRead, AsyncWrite, AsyncWriteExt, FutureExt, SinkExt};
 use git::GitHostingProviderRegistry;
 use gpui::{App, AppContext as _, Context, Entity, SemanticVersion, UpdateGlobal as _};
+use gpui_tokio::Tokio;
 use http_client::{read_proxy_from_env, Uri};
 use language::LanguageRegistry;
 use node_runtime::{NodeBinaryOptions, NodeRuntime};
 use paths::logs_dir;
 use project::project_settings::ProjectSettings;
 
-use release_channel::AppVersion;
+use release_channel::{AppVersion, ReleaseChannel, RELEASE_CHANNEL};
 use remote::proxy::ProxyLaunchError;
 use remote::ssh_session::ChannelClient;
 use remote::{
@@ -148,6 +149,14 @@ fn init_panic_hook() {
             (&backtrace).join("\n")
         );
 
+        let release_channel = *RELEASE_CHANNEL;
+        let version = match release_channel {
+            ReleaseChannel::Stable | ReleaseChannel::Preview => env!("ZED_PKG_VERSION"),
+            ReleaseChannel::Nightly | ReleaseChannel::Dev => {
+                option_env!("ZED_COMMIT_SHA").unwrap_or("missing-zed-commit-sha")
+            }
+        };
+
         let panic_data = telemetry_events::Panic {
             thread: thread_name.into(),
             payload: payload.clone(),
@@ -155,11 +164,9 @@ fn init_panic_hook() {
                 file: location.file().into(),
                 line: location.line(),
             }),
-            app_version: format!(
-                "remote-server-{}",
-                option_env!("ZED_COMMIT_SHA").unwrap_or(&env!("ZED_PKG_VERSION"))
-            ),
-            release_channel: release_channel::RELEASE_CHANNEL.display_name().into(),
+            app_version: format!("remote-server-{version}"),
+            app_commit_sha: option_env!("ZED_COMMIT_SHA").map(|sha| sha.into()),
+            release_channel: release_channel.display_name().into(),
             target: env!("TARGET").to_owned().into(),
             os_name: telemetry::os_name(),
             os_version: Some(telemetry::os_version()),
@@ -425,6 +432,7 @@ pub fn execute_run(
         settings::init(cx);
         let app_version = AppVersion::init(env!("ZED_PKG_VERSION"));
         release_channel::init(app_version, cx);
+        gpui_tokio::init(cx);
 
         HeadlessProject::init(cx);
 
@@ -445,18 +453,21 @@ pub fn execute_run(
 
             let proxy_url = read_proxy_settings(cx);
 
-            let http_client = Arc::new(
-                ReqwestClient::proxy_and_user_agent(
-                    proxy_url,
-                    &format!(
-                        "Zed-Server/{} ({}; {})",
-                        env!("CARGO_PKG_VERSION"),
-                        std::env::consts::OS,
-                        std::env::consts::ARCH
-                    ),
+            let http_client = {
+                let _guard = Tokio::handle(cx).enter();
+                Arc::new(
+                    ReqwestClient::proxy_and_user_agent(
+                        proxy_url,
+                        &format!(
+                            "Zed-Server/{} ({}; {})",
+                            env!("CARGO_PKG_VERSION"),
+                            std::env::consts::OS,
+                            std::env::consts::ARCH
+                        ),
+                    )
+                    .expect("Could not start HTTP client"),
                 )
-                .expect("Could not start HTTP client"),
-            );
+            };
 
             let node_runtime = NodeRuntime::new(http_client.clone(), node_settings_rx);
 

@@ -19,15 +19,6 @@ actions!(
     ]
 );
 
-pub fn init(cx: &mut App) {
-    cx.observe_new(move |workspace: &mut Workspace, _, _cx| {
-        workspace.register_action(|workspace, _: &RateCompletions, window, cx| {
-            RateCompletionModal::toggle(workspace, window, cx);
-        });
-    })
-    .detach();
-}
-
 pub struct RateCompletionModal {
     zeta: Entity<Zeta>,
     active_completion: Option<ActiveCompletion>,
@@ -61,6 +52,8 @@ impl RateCompletionModal {
     pub fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         if let Some(zeta) = Zeta::global(cx) {
             workspace.toggle_modal(window, cx, |_window, cx| RateCompletionModal::new(zeta, cx));
+
+            telemetry::event!("Rate Completion Modal Open", source = "Edit Prediction");
         }
     }
 
@@ -286,7 +279,7 @@ impl RateCompletionModal {
                 editor.set_show_runnables(false, cx);
                 editor.set_show_wrap_guides(false, cx);
                 editor.set_show_indent_guides(false, cx);
-                editor.set_show_inline_completions(Some(false), window, cx);
+                editor.set_show_edit_predictions(Some(false), window, cx);
                 editor.set_placeholder_text("Add your feedback…", cx);
                 if focus {
                     cx.focus_self(window);

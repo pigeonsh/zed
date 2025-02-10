@@ -11,7 +11,6 @@ use assistant_context_editor::{
 };
 use assistant_settings::{AssistantDockPosition, AssistantSettings};
 use assistant_slash_command::SlashCommandWorkingSet;
-use assistant_tool::ToolWorkingSet;
 use client::{proto, Client, Status};
 use editor::{Editor, EditorEvent};
 use fs::Fs;
@@ -100,11 +99,10 @@ impl AssistantPanel {
     ) -> Task<Result<Entity<Self>>> {
         cx.spawn(|mut cx| async move {
             let slash_commands = Arc::new(SlashCommandWorkingSet::default());
-            let tools = Arc::new(ToolWorkingSet::default());
             let context_store = workspace
                 .update(&mut cx, |workspace, cx| {
                     let project = workspace.project().clone();
-                    ContextStore::new(project, prompt_builder.clone(), slash_commands, tools, cx)
+                    ContextStore::new(project, prompt_builder.clone(), slash_commands, cx)
                 })?
                 .await?;
 
@@ -252,10 +250,10 @@ impl AssistantPanel {
                     )
                     .child(
                         PopoverMenu::new("assistant-panel-popover-menu")
-                            .trigger(
+                            .trigger_with_tooltip(
                                 IconButton::new("menu", IconName::EllipsisVertical)
-                                    .icon_size(IconSize::Small)
-                                    .tooltip(Tooltip::text("Toggle Assistant Menu")),
+                                    .icon_size(IconSize::Small),
+                                Tooltip::text("Toggle Assistant Menu"),
                             )
                             .menu(move |window, cx| {
                                 let zoom_label = if _pane.read(cx).is_zoomed() {

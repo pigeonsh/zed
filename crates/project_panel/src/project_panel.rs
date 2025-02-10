@@ -79,6 +79,7 @@ pub struct ProjectPanel {
     /// Relevant only for auto-fold dirs, where a single project panel entry may actually consist of several
     /// project entries (and all non-leaf nodes are guaranteed to be directories).
     ancestors: HashMap<ProjectEntryId, FoldedAncestors>,
+    folded_directory_drag_target: Option<FoldedDirectoryDragTarget>,
     last_worktree_root_id: Option<ProjectEntryId>,
     last_selection_drag_over_entry: Option<ProjectEntryId>,
     last_external_paths_drag_over_entry: Option<ProjectEntryId>,
@@ -105,6 +106,14 @@ pub struct ProjectPanel {
     // in case a user clicks to open a file.
     mouse_down: bool,
     hover_expand_task: Option<Task<()>>,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct FoldedDirectoryDragTarget {
+    entry_id: ProjectEntryId,
+    index: usize,
+    /// Whether we are dragging over the delimiter rather than the component itself.
+    is_delimiter_target: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -153,12 +162,14 @@ struct EntryDetails {
 }
 
 #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Delete {
     #[serde(default)]
     pub skip_prompt: bool,
 }
 
 #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Trash {
     #[serde(default)]
     pub skip_prompt: bool,
@@ -249,7 +260,6 @@ struct SerializedProjectPanel {
 struct DraggedProjectEntryView {
     selection: SelectedEntry,
     details: EntryDetails,
-    width: Pixels,
     click_offset: Point<Pixels>,
     selections: Arc<BTreeSet<SelectedEntry>>,
 }
@@ -322,6 +332,41 @@ impl ProjectPanel {
                     this.update_visible_entries(None, cx);
                     cx.notify();
                 }
+                project::Event::ExpandedAllForEntry(worktree_id, entry_id) => {
+                    if let Some((worktree, expanded_dir_ids)) = project
+                        .read(cx)
+                        .worktree_for_id(*worktree_id, cx)
+                        .zip(this.expanded_dir_ids.get_mut(&worktree_id))
+                    {
+                        let worktree = worktree.read(cx);
+
+                        let Some(entry) = worktree.entry_for_id(*entry_id) else {
+                            return;
+                        };
+                        let include_ignored_dirs = !entry.is_ignored;
+
+                        let mut dirs_to_expand = vec![*entry_id];
+                        while let Some(current_id) = dirs_to_expand.pop() {
+                            let Some(current_entry) = worktree.entry_for_id(current_id) else {
+                                continue;
+                            };
+                            for child in worktree.child_entries(&current_entry.path) {
+                                if !child.is_dir() || (include_ignored_dirs && child.is_ignored) {
+                                    continue;
+                                }
+
+                                dirs_to_expand.push(child.id);
+
+                                if let Err(ix) = expanded_dir_ids.binary_search(&child.id) {
+                                    expanded_dir_ids.insert(ix, child.id);
+                                }
+                                this.unfolded_dir_ids.insert(child.id);
+                            }
+                        }
+                        this.update_visible_entries(None, cx);
+                        cx.notify();
+                    }
+                }
                 _ => {}
             })
             .detach();
@@ -383,6 +428,7 @@ impl ProjectPanel {
                 focus_handle,
                 visible_entries: Default::default(),
                 ancestors: Default::default(),
+                folded_directory_drag_target: None,
                 last_worktree_root_id: Default::default(),
                 last_external_paths_drag_over_entry: None,
                 last_selection_drag_over_entry: None,
@@ -401,9 +447,9 @@ impl ProjectPanel {
                 show_scrollbar: !Self::should_autohide_scrollbar(cx),
                 hide_scrollbar_task: None,
                 vertical_scrollbar_state: ScrollbarState::new(scroll_handle.clone())
-                    .parent_model(&cx.entity()),
+                    .parent_entity(&cx.entity()),
                 horizontal_scrollbar_state: ScrollbarState::new(scroll_handle.clone())
-                    .parent_model(&cx.entity()),
+                    .parent_entity(&cx.entity()),
                 max_width_item_index: None,
                 diagnostics: Default::default(),
                 scroll_handle,
@@ -487,6 +533,7 @@ impl ProjectPanel {
                         }
                     }
                 }
+
                 _ => {}
             }
         })
@@ -686,7 +733,9 @@ impl ProjectPanel {
                             .action("Copy Path", Box::new(CopyPath))
                             .action("Copy Relative Path", Box::new(CopyRelativePath))
                             .separator()
-                            .action("Rename", Box::new(Rename))
+                            .when(!is_root || !cfg!(target_os = "windows"), |menu| {
+                                menu.action("Rename", Box::new(Rename))
+                            })
                             .when(!is_root & !is_remote, |menu| {
                                 menu.action("Trash", Box::new(Trash { skip_prompt: false }))
                             })
@@ -883,6 +932,99 @@ impl ProjectPanel {
         }
     }
 
+    fn toggle_expand_all(
+        &mut self,
+        entry_id: ProjectEntryId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(worktree_id) = self.project.read(cx).worktree_id_for_entry(entry_id, cx) {
+            if let Some(expanded_dir_ids) = self.expanded_dir_ids.get_mut(&worktree_id) {
+                match expanded_dir_ids.binary_search(&entry_id) {
+                    Ok(_ix) => {
+                        self.collapse_all_for_entry(worktree_id, entry_id, cx);
+                    }
+                    Err(_ix) => {
+                        self.expand_all_for_entry(worktree_id, entry_id, cx);
+                    }
+                }
+                self.update_visible_entries(Some((worktree_id, entry_id)), cx);
+                window.focus(&self.focus_handle);
+                cx.notify();
+            }
+        }
+    }
+
+    fn expand_all_for_entry(
+        &mut self,
+        worktree_id: WorktreeId,
+        entry_id: ProjectEntryId,
+        cx: &mut Context<Self>,
+    ) {
+        self.project.update(cx, |project, cx| {
+            if let Some((worktree, expanded_dir_ids)) = project
+                .worktree_for_id(worktree_id, cx)
+                .zip(self.expanded_dir_ids.get_mut(&worktree_id))
+            {
+                if let Some(task) = project.expand_all_for_entry(worktree_id, entry_id, cx) {
+                    task.detach();
+                }
+
+                let worktree = worktree.read(cx);
+
+                if let Some(mut entry) = worktree.entry_for_id(entry_id) {
+                    loop {
+                        if let Err(ix) = expanded_dir_ids.binary_search(&entry.id) {
+                            expanded_dir_ids.insert(ix, entry.id);
+                        }
+
+                        if let Some(parent_entry) =
+                            entry.path.parent().and_then(|p| worktree.entry_for_path(p))
+                        {
+                            entry = parent_entry;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn collapse_all_for_entry(
+        &mut self,
+        worktree_id: WorktreeId,
+        entry_id: ProjectEntryId,
+        cx: &mut Context<Self>,
+    ) {
+        self.project.update(cx, |project, cx| {
+            if let Some((worktree, expanded_dir_ids)) = project
+                .worktree_for_id(worktree_id, cx)
+                .zip(self.expanded_dir_ids.get_mut(&worktree_id))
+            {
+                let worktree = worktree.read(cx);
+                let mut dirs_to_collapse = vec![entry_id];
+                let auto_fold_enabled = ProjectPanelSettings::get_global(cx).auto_fold_dirs;
+                while let Some(current_id) = dirs_to_collapse.pop() {
+                    let Some(current_entry) = worktree.entry_for_id(current_id) else {
+                        continue;
+                    };
+                    if let Ok(ix) = expanded_dir_ids.binary_search(&current_id) {
+                        expanded_dir_ids.remove(ix);
+                    }
+                    if auto_fold_enabled {
+                        self.unfolded_dir_ids.remove(&current_id);
+                    }
+                    for child in worktree.child_entries(&current_entry.path) {
+                        if child.is_dir() {
+                            dirs_to_collapse.push(child.id);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     fn select_prev(&mut self, _: &SelectPrev, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(edit_state) = &self.edit_state {
             if edit_state.processing_filename.is_none() {
@@ -968,8 +1110,13 @@ impl ProjectPanel {
         let worktree_id = edit_state.worktree_id;
         let is_new_entry = edit_state.is_new_entry();
         let filename = self.filename_editor.read(cx).text(cx);
-        edit_state.is_dir = edit_state.is_dir
-            || (edit_state.is_new_entry() && filename.ends_with(std::path::MAIN_SEPARATOR));
+        #[cfg(not(target_os = "windows"))]
+        let filename_indicates_dir = filename.ends_with("/");
+        // On Windows, path separator could be either `/` or `\`.
+        #[cfg(target_os = "windows")]
+        let filename_indicates_dir = filename.ends_with("/") || filename.ends_with("\\");
+        edit_state.is_dir =
+            edit_state.is_dir || (edit_state.is_new_entry() && filename_indicates_dir);
         let is_dir = edit_state.is_dir;
         let worktree = self.project.read(cx).worktree_for_id(worktree_id, cx)?;
         let entry = worktree.read(cx).entry_for_id(edit_state.entry_id)?.clone();
@@ -1203,6 +1350,10 @@ impl ProjectPanel {
             if let Some(worktree) = self.project.read(cx).worktree_for_id(worktree_id, cx) {
                 let sub_entry_id = self.unflatten_entry_id(entry_id);
                 if let Some(entry) = worktree.read(cx).entry_for_id(sub_entry_id) {
+                    #[cfg(target_os = "windows")]
+                    if Some(entry) == worktree.read(cx).root_entry() {
+                        return;
+                    }
                     self.edit_state = Some(EditState {
                         worktree_id,
                         entry_id: sub_entry_id,
@@ -1723,7 +1874,7 @@ impl ProjectPanel {
     ) {
         let selection = self.find_entry(
             self.selection.as_ref(),
-            true,
+            false,
             |entry, worktree_id| {
                 (self.selection.is_none()
                     || self.selection.is_some_and(|selection| {
@@ -2119,24 +2270,45 @@ impl ProjectPanel {
         cx: &mut Context<Self>,
     ) {
         if let Some((worktree, entry)) = self.selected_sub_entry(cx) {
-            if entry.is_dir() {
-                let include_root = self.project.read(cx).visible_worktrees(cx).count() > 1;
-                let dir_path = if include_root {
-                    let mut full_path = PathBuf::from(worktree.read(cx).root_name());
-                    full_path.push(&entry.path);
-                    Arc::from(full_path)
-                } else {
-                    entry.path.clone()
-                };
+            let dir_path = if entry.is_dir() {
+                entry.path.clone()
+            } else {
+                // entry is a file, use its parent directory
+                match entry.path.parent() {
+                    Some(parent) => Arc::from(parent),
+                    None => {
+                        // File at root, open search with empty filter
+                        self.workspace
+                            .update(cx, |workspace, cx| {
+                                search::ProjectSearchView::new_search_in_directory(
+                                    workspace,
+                                    Path::new(""),
+                                    window,
+                                    cx,
+                                );
+                            })
+                            .ok();
+                        return;
+                    }
+                }
+            };
 
-                self.workspace
-                    .update(cx, |workspace, cx| {
-                        search::ProjectSearchView::new_search_in_directory(
-                            workspace, &dir_path, window, cx,
-                        );
-                    })
-                    .ok();
-            }
+            let include_root = self.project.read(cx).visible_worktrees(cx).count() > 1;
+            let dir_path = if include_root {
+                let mut full_path = PathBuf::from(worktree.read(cx).root_name());
+                full_path.push(&dir_path);
+                Arc::from(full_path)
+            } else {
+                dir_path
+            };
+
+            self.workspace
+                .update(cx, |workspace, cx| {
+                    search::ProjectSearchView::new_search_in_directory(
+                        workspace, &dir_path, window, cx,
+                    );
+                })
+                .ok();
         }
     }
 
@@ -3335,7 +3507,6 @@ impl ProjectPanel {
             .selection
             .map_or(false, |selection| selection.entry_id == entry_id);
 
-        let width = self.size(window, cx);
         let file_name = details.filename.clone();
 
         let mut icon = details.icon.clone();
@@ -3393,6 +3564,8 @@ impl ProjectPanel {
             } else {
                 bg_hover_color
             };
+
+        let folded_directory_drag_target = self.folded_directory_drag_target;
 
         div()
             .id(entry_id.to_proto() as usize)
@@ -3505,18 +3678,25 @@ impl ProjectPanel {
                 move |selection, click_offset, _window, cx| {
                     cx.new(|_| DraggedProjectEntryView {
                         details: details.clone(),
-                        width,
                         click_offset,
                         selection: selection.active_selection,
                         selections: selection.marked_selections.clone(),
                     })
                 },
             )
-            .drag_over::<DraggedSelection>(move |style, _, _, _| style.bg(item_colors.drag_over))
+            .drag_over::<DraggedSelection>(move |style, _, _, _| {
+                if  folded_directory_drag_target.is_some() {
+                    return style;
+                }
+                style.bg(item_colors.drag_over)
+            })
             .on_drop(
                 cx.listener(move |this, selections: &DraggedSelection, window, cx| {
                     this.hover_scroll_task.take();
                     this.hover_expand_task.take();
+                    if  folded_directory_drag_target.is_some() {
+                        return;
+                    }
                     this.drag_onto(selections, entry_id, kind.is_file(), window, cx);
                 }),
             )
@@ -3540,7 +3720,7 @@ impl ProjectPanel {
                     }
                     cx.stop_propagation();
 
-                    if let Some(selection) = this.selection.filter(|_| event.down.modifiers.shift) {
+                    if let Some(selection) = this.selection.filter(|_| event.modifiers().shift) {
                         let current_selection = this.index_for_selection(selection);
                         let clicked_entry = SelectedEntry {
                             entry_id,
@@ -3574,7 +3754,7 @@ impl ProjectPanel {
                             this.selection = Some(clicked_entry);
                             this.marked_entries.insert(clicked_entry);
                         }
-                    } else if event.down.modifiers.secondary() {
+                    } else if event.modifiers().secondary() {
                         if event.down.click_count > 1 {
                             this.split_entry(entry_id, cx);
                         } else {
@@ -3585,7 +3765,11 @@ impl ProjectPanel {
                         }
                     } else if kind.is_dir() {
                         this.marked_entries.clear();
-                        this.toggle_expanded(entry_id, window, cx);
+                        if event.modifiers().alt {
+                            this.toggle_expand_all(entry_id, window, cx);
+                        } else {
+                            this.toggle_expanded(entry_id, window, cx);
+                        }
                     } else {
                         let preview_tabs_enabled = PreviewTabsSettings::get_global(cx).enabled;
                         let click_count = event.up.click_count;
@@ -3699,15 +3883,51 @@ impl ProjectPanel {
                                     let active_index = components_len
                                         - 1
                                         - folded_ancestors.current_ancestor_depth;
-                                    const DELIMITER: SharedString =
+                                        const DELIMITER: SharedString =
                                         SharedString::new_static(std::path::MAIN_SEPARATOR_STR);
                                     for (index, component) in components.into_iter().enumerate() {
                                         if index != 0 {
-                                            this = this.child(
-                                                Label::new(DELIMITER.clone())
-                                                    .single_line()
-                                                    .color(filename_text_color),
-                                            );
+                                                let delimiter_target_index = index - 1;
+                                                let target_entry_id = folded_ancestors.ancestors.get(components_len - 1 - delimiter_target_index).cloned();
+                                                this = this.child(
+                                                    div()
+                                                    .on_drop(cx.listener(move |this, selections: &DraggedSelection, window, cx| {
+                                                        this.hover_scroll_task.take();
+                                                        this.folded_directory_drag_target = None;
+                                                        if let Some(target_entry_id) = target_entry_id {
+                                                            this.drag_onto(selections, target_entry_id, kind.is_file(), window, cx);
+                                                        }
+                                                    }))
+                                                    .on_drag_move(cx.listener(
+                                                        move |this, event: &DragMoveEvent<DraggedSelection>, _, _| {
+                                                            if event.bounds.contains(&event.event.position) {
+                                                                this.folded_directory_drag_target = Some(
+                                                                    FoldedDirectoryDragTarget {
+                                                                        entry_id,
+                                                                        index: delimiter_target_index,
+                                                                        is_delimiter_target: true,
+                                                                    }
+                                                                );
+                                                            } else {
+                                                                let is_current_target = this.folded_directory_drag_target
+                                                                    .map_or(false, |target|
+                                                                        target.entry_id == entry_id &&
+                                                                        target.index == delimiter_target_index &&
+                                                                        target.is_delimiter_target
+                                                                    );
+                                                                if is_current_target {
+                                                                    this.folded_directory_drag_target = None;
+                                                                }
+                                                            }
+
+                                                        },
+                                                    ))
+                                                    .child(
+                                                        Label::new(DELIMITER.clone())
+                                                            .single_line()
+                                                            .color(filename_text_color)
+                                                    )
+                                                );
                                         }
                                         let id = SharedString::from(format!(
                                             "project_panel_path_component_{}_{index}",
@@ -3726,6 +3946,47 @@ impl ProjectPanel {
                                                     }
                                                 }
                                             }))
+                                            .when(index != components_len - 1, |div|{
+                                                let target_entry_id = folded_ancestors.ancestors.get(components_len - 1 - index).cloned();
+                                                div
+                                                .on_drag_move(cx.listener(
+                                                    move |this, event: &DragMoveEvent<DraggedSelection>, _, _| {
+                                                    if event.bounds.contains(&event.event.position) {
+                                                            this.folded_directory_drag_target = Some(
+                                                                FoldedDirectoryDragTarget {
+                                                                    entry_id,
+                                                                    index,
+                                                                    is_delimiter_target: false,
+                                                                }
+                                                            );
+                                                        } else {
+                                                            let is_current_target = this.folded_directory_drag_target
+                                                                .as_ref()
+                                                                .map_or(false, |target|
+                                                                    target.entry_id == entry_id &&
+                                                                    target.index == index &&
+                                                                    !target.is_delimiter_target
+                                                                );
+                                                            if is_current_target {
+                                                                this.folded_directory_drag_target = None;
+                                                            }
+                                                        }
+                                                    },
+                                                ))
+                                                .on_drop(cx.listener(move |this, selections: &DraggedSelection, window,cx| {
+                                                    this.hover_scroll_task.take();
+                                                    this.folded_directory_drag_target = None;
+                                                    if let Some(target_entry_id) = target_entry_id {
+                                                        this.drag_onto(selections, target_entry_id, kind.is_file(), window, cx);
+                                                    }
+                                                }))
+                                                .when(folded_directory_drag_target.map_or(false, |target|
+                                                    target.entry_id == entry_id &&
+                                                    target.index == index
+                                                ), |this| {
+                                                    this.bg(item_colors.drag_over)
+                                                })
+                                            })
                                             .child(
                                                 Label::new(component)
                                                     .single_line()
@@ -4414,35 +4675,33 @@ impl Render for ProjectPanel {
 
 impl Render for DraggedProjectEntryView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = ProjectPanelSettings::get_global(cx);
         let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
-
-        h_flex().font(ui_font).map(|this| {
-            if self.selections.len() > 1 && self.selections.contains(&self.selection) {
-                this.flex_none()
-                    .w(self.width)
-                    .child(div().w(self.click_offset.x))
-                    .child(
-                        div()
-                            .p_1()
-                            .rounded_xl()
-                            .bg(cx.theme().colors().background)
-                            .child(Label::new(format!("{} entries", self.selections.len()))),
-                    )
-            } else {
-                this.w(self.width).bg(cx.theme().colors().background).child(
-                    ListItem::new(self.selection.entry_id.to_proto() as usize)
-                        .indent_level(self.details.depth)
-                        .indent_step_size(px(settings.indent_size))
-                        .child(if let Some(icon) = &self.details.icon {
-                            div().child(Icon::from_path(icon.clone()))
+        h_flex()
+            .font(ui_font)
+            .pl(self.click_offset.x + px(12.))
+            .pt(self.click_offset.y + px(12.))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .items_center()
+                    .py_1()
+                    .px_2()
+                    .rounded_lg()
+                    .bg(cx.theme().colors().background)
+                    .map(|this| {
+                        if self.selections.len() > 1 && self.selections.contains(&self.selection) {
+                            this.child(Label::new(format!("{} entries", self.selections.len())))
                         } else {
-                            div()
-                        })
-                        .child(Label::new(self.details.filename.clone())),
-                )
-            }
-        })
+                            this.child(if let Some(icon) = &self.details.icon {
+                                div().child(Icon::from_path(icon.clone()))
+                            } else {
+                                div()
+                            })
+                            .child(Label::new(self.details.filename.clone()))
+                        }
+                    }),
+            )
     }
 }
 
@@ -4547,6 +4806,7 @@ mod tests {
     use serde_json::json;
     use settings::SettingsStore;
     use std::path::{Path, PathBuf};
+    use util::{path, separator};
     use workspace::{
         item::{Item, ProjectItem},
         register_project_item, AppState,
@@ -4648,7 +4908,7 @@ mod tests {
 
         let fs = FakeFs::new(cx.executor().clone());
         fs.insert_tree(
-            "/src",
+            path!("/src"),
             json!({
                 "test": {
                     "first.rs": "// First Rust file",
@@ -4659,7 +4919,7 @@ mod tests {
         )
         .await;
 
-        let project = Project::test(fs.clone(), ["/src".as_ref()], cx).await;
+        let project = Project::test(fs.clone(), [path!("/src").as_ref()], cx).await;
         let workspace =
             cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let cx = &mut VisualTestContext::from_window(*workspace, cx);
@@ -4820,7 +5080,7 @@ mod tests {
 
         let fs = FakeFs::new(cx.executor().clone());
         fs.insert_tree(
-            "/root1",
+            path!("/root1"),
             json!({
                 "dir_1": {
                     "nested_dir_1": {
@@ -4842,7 +5102,7 @@ mod tests {
         )
         .await;
         fs.insert_tree(
-            "/root2",
+            path!("/root2"),
             json!({
                 "dir_2": {
                     "file_1.java": "// File contents",
@@ -4851,7 +5111,12 @@ mod tests {
         )
         .await;
 
-        let project = Project::test(fs.clone(), ["/root1".as_ref(), "/root2".as_ref()], cx).await;
+        let project = Project::test(
+            fs.clone(),
+            [path!("/root1").as_ref(), path!("/root2").as_ref()],
+            cx,
+        )
+        .await;
         let workspace =
             cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let cx = &mut VisualTestContext::from_window(*workspace, cx);
@@ -4869,10 +5134,10 @@ mod tests {
         assert_eq!(
             visible_entries_as_strings(&panel, 0..10, cx),
             &[
-                "v root1",
-                "    > dir_1/nested_dir_1/nested_dir_2/nested_dir_3",
-                "v root2",
-                "    > dir_2",
+                separator!("v root1"),
+                separator!("    > dir_1/nested_dir_1/nested_dir_2/nested_dir_3"),
+                separator!("v root2"),
+                separator!("    > dir_2"),
             ]
         );
 
@@ -4884,14 +5149,14 @@ mod tests {
         assert_eq!(
             visible_entries_as_strings(&panel, 0..10, cx),
             &[
-                "v root1",
-                "    v dir_1/nested_dir_1/nested_dir_2/nested_dir_3  <== selected",
-                "        > nested_dir_4/nested_dir_5",
-                "          file_a.java",
-                "          file_b.java",
-                "          file_c.java",
-                "v root2",
-                "    > dir_2",
+                separator!("v root1"),
+                separator!("    v dir_1/nested_dir_1/nested_dir_2/nested_dir_3  <== selected"),
+                separator!("        > nested_dir_4/nested_dir_5"),
+                separator!("          file_a.java"),
+                separator!("          file_b.java"),
+                separator!("          file_c.java"),
+                separator!("v root2"),
+                separator!("    > dir_2"),
             ]
         );
 
@@ -4903,31 +5168,31 @@ mod tests {
         assert_eq!(
             visible_entries_as_strings(&panel, 0..10, cx),
             &[
-                "v root1",
-                "    v dir_1/nested_dir_1/nested_dir_2/nested_dir_3",
-                "        v nested_dir_4/nested_dir_5  <== selected",
-                "              file_d.java",
-                "          file_a.java",
-                "          file_b.java",
-                "          file_c.java",
-                "v root2",
-                "    > dir_2",
+                separator!("v root1"),
+                separator!("    v dir_1/nested_dir_1/nested_dir_2/nested_dir_3"),
+                separator!("        v nested_dir_4/nested_dir_5  <== selected"),
+                separator!("              file_d.java"),
+                separator!("          file_a.java"),
+                separator!("          file_b.java"),
+                separator!("          file_c.java"),
+                separator!("v root2"),
+                separator!("    > dir_2"),
             ]
         );
         toggle_expand_dir(&panel, "root2/dir_2", cx);
         assert_eq!(
             visible_entries_as_strings(&panel, 0..10, cx),
             &[
-                "v root1",
-                "    v dir_1/nested_dir_1/nested_dir_2/nested_dir_3",
-                "        v nested_dir_4/nested_dir_5",
-                "              file_d.java",
-                "          file_a.java",
-                "          file_b.java",
-                "          file_c.java",
-                "v root2",
-                "    v dir_2  <== selected",
-                "          file_1.java",
+                separator!("v root1"),
+                separator!("    v dir_1/nested_dir_1/nested_dir_2/nested_dir_3"),
+                separator!("        v nested_dir_4/nested_dir_5"),
+                separator!("              file_d.java"),
+                separator!("          file_a.java"),
+                separator!("          file_b.java"),
+                separator!("          file_c.java"),
+                separator!("v root2"),
+                separator!("    v dir_2  <== selected"),
+                separator!("          file_1.java"),
             ]
         );
     }
@@ -5436,7 +5701,7 @@ mod tests {
 
         let fs = FakeFs::new(cx.executor().clone());
         fs.insert_tree(
-            "/root1",
+            path!("/root1"),
             json!({
                 ".dockerignore": "",
                 ".git": {
@@ -5446,7 +5711,7 @@ mod tests {
         )
         .await;
 
-        let project = Project::test(fs.clone(), ["/root1".as_ref()], cx).await;
+        let project = Project::test(fs.clone(), [path!("/root1").as_ref()], cx).await;
         let workspace =
             cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let cx = &mut VisualTestContext::from_window(*workspace, cx);
@@ -5481,9 +5746,10 @@ mod tests {
         );
 
         let confirm = panel.update_in(cx, |panel, window, cx| {
+            // If we want to create a subdirectory, there should be no prefix slash.
             panel
                 .filename_editor
-                .update(cx, |editor, cx| editor.set_text("/new_dir/", window, cx));
+                .update(cx, |editor, cx| editor.set_text("new_dir/", window, cx));
             panel.confirm_edit(window, cx).unwrap()
         });
 
@@ -5492,14 +5758,14 @@ mod tests {
             &[
                 "v root1",
                 "    > .git",
-                "      [PROCESSING: '/new_dir/']  <== selected",
+                "      [PROCESSING: 'new_dir/']  <== selected",
                 "      .dockerignore",
             ]
         );
 
         confirm.await.unwrap();
         assert_eq!(
-            visible_entries_as_strings(&panel, 0..13, cx),
+            visible_entries_as_strings(&panel, 0..10, cx),
             &[
                 "v root1",
                 "    > .git",
@@ -5507,6 +5773,54 @@ mod tests {
                 "      .dockerignore",
             ]
         );
+
+        // Test filename with whitespace
+        select_path(&panel, "root1", cx);
+        panel.update_in(cx, |panel, window, cx| panel.new_file(&NewFile, window, cx));
+        let confirm = panel.update_in(cx, |panel, window, cx| {
+            // If we want to create a subdirectory, there should be no prefix slash.
+            panel
+                .filename_editor
+                .update(cx, |editor, cx| editor.set_text("new dir 2/", window, cx));
+            panel.confirm_edit(window, cx).unwrap()
+        });
+        confirm.await.unwrap();
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..10, cx),
+            &[
+                "v root1",
+                "    > .git",
+                "    v new dir 2  <== selected",
+                "    v new_dir",
+                "      .dockerignore",
+            ]
+        );
+
+        // Test filename ends with "\"
+        #[cfg(target_os = "windows")]
+        {
+            select_path(&panel, "root1", cx);
+            panel.update_in(cx, |panel, window, cx| panel.new_file(&NewFile, window, cx));
+            let confirm = panel.update_in(cx, |panel, window, cx| {
+                // If we want to create a subdirectory, there should be no prefix slash.
+                panel
+                    .filename_editor
+                    .update(cx, |editor, cx| editor.set_text("new_dir_3\\", window, cx));
+                panel.confirm_edit(window, cx).unwrap()
+            });
+            confirm.await.unwrap();
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..10, cx),
+                &[
+                    "v root1",
+                    "    > .git",
+                    "    v new dir 2",
+                    "    v new_dir",
+                    "    v new_dir_3  <== selected",
+                    "      .dockerignore",
+                ]
+            );
+        }
     }
 
     #[gpui::test]
@@ -6163,7 +6477,7 @@ mod tests {
 
         let fs = FakeFs::new(cx.executor().clone());
         fs.insert_tree(
-            "/src",
+            path!("/src"),
             json!({
                 "test": {
                     "first.rs": "// First Rust file",
@@ -6174,7 +6488,7 @@ mod tests {
         )
         .await;
 
-        let project = Project::test(fs.clone(), ["/src".as_ref()], cx).await;
+        let project = Project::test(fs.clone(), [path!("/src").as_ref()], cx).await;
         let workspace =
             cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let cx = &mut VisualTestContext::from_window(*workspace, cx);
@@ -6417,6 +6731,286 @@ mod tests {
                 "          third.rs"
             ],
             "File list should be unchanged after failed rename confirmation"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_select_git_entry(cx: &mut gpui::TestAppContext) {
+        use git::status::{FileStatus, StatusCode, TrackedStatus};
+        use std::path::Path;
+
+        init_test_with_editor(cx);
+
+        let fs = FakeFs::new(cx.executor().clone());
+        fs.insert_tree(
+            "/root",
+            json!({
+                "tree1": {
+                    ".git": {},
+                    "dir1": {
+                        "modified1.txt": "",
+                        "unmodified1.txt": "",
+                        "modified2.txt": "",
+                    },
+                    "dir2": {
+                        "modified3.txt": "",
+                        "unmodified2.txt": "",
+                    },
+                    "modified4.txt": "",
+                    "unmodified3.txt": "",
+                },
+                "tree2": {
+                    ".git": {},
+                    "dir3": {
+                        "modified5.txt": "",
+                        "unmodified4.txt": "",
+                    },
+                    "modified6.txt": "",
+                    "unmodified5.txt": "",
+                }
+            }),
+        )
+        .await;
+
+        // Mark files as git modified
+        let tree1_modified_files = [
+            "dir1/modified1.txt",
+            "dir1/modified2.txt",
+            "modified4.txt",
+            "dir2/modified3.txt",
+        ];
+
+        let tree2_modified_files = ["dir3/modified5.txt", "modified6.txt"];
+
+        let root1_dot_git = Path::new("/root/tree1/.git");
+        let root2_dot_git = Path::new("/root/tree2/.git");
+        let set_value = FileStatus::Tracked(TrackedStatus {
+            index_status: StatusCode::Modified,
+            worktree_status: StatusCode::Modified,
+        });
+
+        fs.with_git_state(&root1_dot_git, true, |git_repo_state| {
+            for file_path in tree1_modified_files {
+                git_repo_state.statuses.insert(file_path.into(), set_value);
+            }
+        });
+
+        fs.with_git_state(&root2_dot_git, true, |git_repo_state| {
+            for file_path in tree2_modified_files {
+                git_repo_state.statuses.insert(file_path.into(), set_value);
+            }
+        });
+
+        let project = Project::test(
+            fs.clone(),
+            ["/root/tree1".as_ref(), "/root/tree2".as_ref()],
+            cx,
+        )
+        .await;
+        let workspace =
+            cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let cx = &mut VisualTestContext::from_window(*workspace, cx);
+        let panel = workspace.update(cx, ProjectPanel::new).unwrap();
+
+        // Check initial state
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..15, cx),
+            &[
+                "v tree1",
+                "    > .git",
+                "    > dir1",
+                "    > dir2",
+                "      modified4.txt",
+                "      unmodified3.txt",
+                "v tree2",
+                "    > .git",
+                "    > dir3",
+                "      modified6.txt",
+                "      unmodified5.txt"
+            ],
+        );
+
+        // Test selecting next modified entry
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..6, cx),
+            &[
+                "v tree1",
+                "    > .git",
+                "    v dir1",
+                "          modified1.txt  <== selected",
+                "          modified2.txt",
+                "          unmodified1.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..6, cx),
+            &[
+                "v tree1",
+                "    > .git",
+                "    v dir1",
+                "          modified1.txt",
+                "          modified2.txt  <== selected",
+                "          unmodified1.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 6..9, cx),
+            &[
+                "    v dir2",
+                "          modified3.txt  <== selected",
+                "          unmodified2.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 9..11, cx),
+            &["      modified4.txt  <== selected", "      unmodified3.txt",],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 13..16, cx),
+            &[
+                "    v dir3",
+                "          modified5.txt  <== selected",
+                "          unmodified4.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 16..18, cx),
+            &["      modified6.txt  <== selected", "      unmodified5.txt",],
+        );
+
+        // Wraps around to first modified file
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_next_git_entry(&SelectNextGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..18, cx),
+            &[
+                "v tree1",
+                "    > .git",
+                "    v dir1",
+                "          modified1.txt  <== selected",
+                "          modified2.txt",
+                "          unmodified1.txt",
+                "    v dir2",
+                "          modified3.txt",
+                "          unmodified2.txt",
+                "      modified4.txt",
+                "      unmodified3.txt",
+                "v tree2",
+                "    > .git",
+                "    v dir3",
+                "          modified5.txt",
+                "          unmodified4.txt",
+                "      modified6.txt",
+                "      unmodified5.txt",
+            ],
+        );
+
+        // Wraps around again to last modified file
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_prev_git_entry(&SelectPrevGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 16..18, cx),
+            &["      modified6.txt  <== selected", "      unmodified5.txt",],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_prev_git_entry(&SelectPrevGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 13..16, cx),
+            &[
+                "    v dir3",
+                "          modified5.txt  <== selected",
+                "          unmodified4.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_prev_git_entry(&SelectPrevGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 9..11, cx),
+            &["      modified4.txt  <== selected", "      unmodified3.txt",],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_prev_git_entry(&SelectPrevGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 6..9, cx),
+            &[
+                "    v dir2",
+                "          modified3.txt  <== selected",
+                "          unmodified2.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_prev_git_entry(&SelectPrevGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..6, cx),
+            &[
+                "v tree1",
+                "    > .git",
+                "    v dir1",
+                "          modified1.txt",
+                "          modified2.txt  <== selected",
+                "          unmodified1.txt",
+            ],
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.select_prev_git_entry(&SelectPrevGitEntry, window, cx);
+        });
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..6, cx),
+            &[
+                "v tree1",
+                "    > .git",
+                "    v dir1",
+                "          modified1.txt  <== selected",
+                "          modified2.txt",
+                "          unmodified1.txt",
+            ],
         );
     }
 
@@ -6689,6 +7283,84 @@ mod tests {
         assert_eq!(
             visible_entries_as_strings(&panel, 0..10, cx),
             &["v root", "      newer  <== selected"]
+        );
+    }
+
+    #[gpui::test]
+    #[cfg_attr(target_os = "windows", ignore)]
+    async fn test_rename_root_of_worktree(cx: &mut gpui::TestAppContext) {
+        init_test_with_editor(cx);
+
+        let fs = FakeFs::new(cx.executor().clone());
+        fs.insert_tree(
+            "/root1",
+            json!({
+                "dir1": {
+                    "file1.txt": "content 1",
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), ["/root1".as_ref()], cx).await;
+        let workspace =
+            cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let cx = &mut VisualTestContext::from_window(*workspace, cx);
+        let panel = workspace.update(cx, ProjectPanel::new).unwrap();
+
+        toggle_expand_dir(&panel, "root1/dir1", cx);
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &["v root1", "    v dir1  <== selected", "          file1.txt",],
+            "Initial state with worktrees"
+        );
+
+        select_path(&panel, "root1", cx);
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &["v root1  <== selected", "    v dir1", "          file1.txt",],
+        );
+
+        // Rename root1 to new_root1
+        panel.update_in(cx, |panel, window, cx| panel.rename(&Rename, window, cx));
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                "v [EDITOR: 'root1']  <== selected",
+                "    v dir1",
+                "          file1.txt",
+            ],
+        );
+
+        let confirm = panel.update_in(cx, |panel, window, cx| {
+            panel
+                .filename_editor
+                .update(cx, |editor, cx| editor.set_text("new_root1", window, cx));
+            panel.confirm_edit(window, cx).unwrap()
+        });
+        confirm.await.unwrap();
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                "v new_root1  <== selected",
+                "    v dir1",
+                "          file1.txt",
+            ],
+            "Should update worktree name"
+        );
+
+        // Ensure internal paths have been updated
+        select_path(&panel, "new_root1/dir1/file1.txt", cx);
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                "v new_root1",
+                "    v dir1",
+                "          file1.txt  <== selected",
+            ],
+            "Files in renamed worktree are selectable"
         );
     }
 
@@ -8291,6 +8963,383 @@ mod tests {
             }
             panic!("no worktree for path {:?}", path);
         });
+    }
+
+    #[gpui::test]
+    async fn test_expand_all_for_entry(cx: &mut gpui::TestAppContext) {
+        init_test_with_editor(cx);
+
+        let fs = FakeFs::new(cx.executor().clone());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".gitignore": "**/ignored_dir\n**/ignored_nested",
+                "dir1": {
+                    "empty1": {
+                        "empty2": {
+                            "empty3": {
+                                "file.txt": ""
+                            }
+                        }
+                    },
+                    "subdir1": {
+                        "file1.txt": "",
+                        "file2.txt": "",
+                        "ignored_nested": {
+                            "ignored_file.txt": ""
+                        }
+                    },
+                    "ignored_dir": {
+                        "subdir": {
+                            "deep_file.txt": ""
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        let workspace =
+            cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+        // Test 1: When auto-fold is enabled
+        cx.update(|_, cx| {
+            let settings = *ProjectPanelSettings::get_global(cx);
+            ProjectPanelSettings::override_global(
+                ProjectPanelSettings {
+                    auto_fold_dirs: true,
+                    ..settings
+                },
+                cx,
+            );
+        });
+
+        let panel = workspace.update(cx, ProjectPanel::new).unwrap();
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &["v root", "    > dir1", "      .gitignore",],
+            "Initial state should show collapsed root structure"
+        );
+
+        toggle_expand_dir(&panel, "root/dir1", cx);
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                separator!("v root"),
+                separator!("    v dir1  <== selected"),
+                separator!("        > empty1/empty2/empty3"),
+                separator!("        > ignored_dir"),
+                separator!("        > subdir1"),
+                separator!("      .gitignore"),
+            ],
+            "Should show first level with auto-folded dirs and ignored dir visible"
+        );
+
+        let entry_id = find_project_entry(&panel, "root/dir1", cx).unwrap();
+        panel.update(cx, |panel, cx| {
+            let project = panel.project.read(cx);
+            let worktree = project.worktrees(cx).next().unwrap().read(cx);
+            panel.expand_all_for_entry(worktree.id(), entry_id, cx);
+            panel.update_visible_entries(None, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                separator!("v root"),
+                separator!("    v dir1  <== selected"),
+                separator!("        v empty1"),
+                separator!("            v empty2"),
+                separator!("                v empty3"),
+                separator!("                      file.txt"),
+                separator!("        > ignored_dir"),
+                separator!("        v subdir1"),
+                separator!("            > ignored_nested"),
+                separator!("              file1.txt"),
+                separator!("              file2.txt"),
+                separator!("      .gitignore"),
+            ],
+            "After expand_all with auto-fold: should not expand ignored_dir, should expand folded dirs, and should not expand ignored_nested"
+        );
+
+        // Test 2: When auto-fold is disabled
+        cx.update(|_, cx| {
+            let settings = *ProjectPanelSettings::get_global(cx);
+            ProjectPanelSettings::override_global(
+                ProjectPanelSettings {
+                    auto_fold_dirs: false,
+                    ..settings
+                },
+                cx,
+            );
+        });
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.collapse_all_entries(&CollapseAllEntries, window, cx);
+        });
+
+        toggle_expand_dir(&panel, "root/dir1", cx);
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                separator!("v root"),
+                separator!("    v dir1  <== selected"),
+                separator!("        > empty1"),
+                separator!("        > ignored_dir"),
+                separator!("        > subdir1"),
+                separator!("      .gitignore"),
+            ],
+            "With auto-fold disabled: should show all directories separately"
+        );
+
+        let entry_id = find_project_entry(&panel, "root/dir1", cx).unwrap();
+        panel.update(cx, |panel, cx| {
+            let project = panel.project.read(cx);
+            let worktree = project.worktrees(cx).next().unwrap().read(cx);
+            panel.expand_all_for_entry(worktree.id(), entry_id, cx);
+            panel.update_visible_entries(None, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                separator!("v root"),
+                separator!("    v dir1  <== selected"),
+                separator!("        v empty1"),
+                separator!("            v empty2"),
+                separator!("                v empty3"),
+                separator!("                      file.txt"),
+                separator!("        > ignored_dir"),
+                separator!("        v subdir1"),
+                separator!("            > ignored_nested"),
+                separator!("              file1.txt"),
+                separator!("              file2.txt"),
+                separator!("      .gitignore"),
+            ],
+            "After expand_all without auto-fold: should expand all dirs normally, \
+         expand ignored_dir itself but not its subdirs, and not expand ignored_nested"
+        );
+
+        // Test 3: When explicitly called on ignored directory
+        let ignored_dir_entry = find_project_entry(&panel, "root/dir1/ignored_dir", cx).unwrap();
+        panel.update(cx, |panel, cx| {
+            let project = panel.project.read(cx);
+            let worktree = project.worktrees(cx).next().unwrap().read(cx);
+            panel.expand_all_for_entry(worktree.id(), ignored_dir_entry, cx);
+            panel.update_visible_entries(None, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            visible_entries_as_strings(&panel, 0..20, cx),
+            &[
+                separator!("v root"),
+                separator!("    v dir1  <== selected"),
+                separator!("        v empty1"),
+                separator!("            v empty2"),
+                separator!("                v empty3"),
+                separator!("                      file.txt"),
+                separator!("        v ignored_dir"),
+                separator!("            v subdir"),
+                separator!("                  deep_file.txt"),
+                separator!("        v subdir1"),
+                separator!("            > ignored_nested"),
+                separator!("              file1.txt"),
+                separator!("              file2.txt"),
+                separator!("      .gitignore"),
+            ],
+            "After expand_all on ignored_dir: should expand all contents of the ignored directory"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_collapse_all_for_entry(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor().clone());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "dir1": {
+                    "subdir1": {
+                        "nested1": {
+                            "file1.txt": "",
+                            "file2.txt": ""
+                        },
+                    },
+                    "subdir2": {
+                        "file4.txt": ""
+                    }
+                },
+                "dir2": {
+                    "single_file": {
+                        "file5.txt": ""
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        let workspace =
+            cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+        // Test 1: Basic collapsing
+        {
+            let panel = workspace.update(cx, ProjectPanel::new).unwrap();
+
+            toggle_expand_dir(&panel, "root/dir1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir1/nested1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir2", cx);
+
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..20, cx),
+                &[
+                    separator!("v root"),
+                    separator!("    v dir1"),
+                    separator!("        v subdir1"),
+                    separator!("            v nested1"),
+                    separator!("                  file1.txt"),
+                    separator!("                  file2.txt"),
+                    separator!("        v subdir2  <== selected"),
+                    separator!("              file4.txt"),
+                    separator!("    > dir2"),
+                ],
+                "Initial state with everything expanded"
+            );
+
+            let entry_id = find_project_entry(&panel, "root/dir1", cx).unwrap();
+            panel.update(cx, |panel, cx| {
+                let project = panel.project.read(cx);
+                let worktree = project.worktrees(cx).next().unwrap().read(cx);
+                panel.collapse_all_for_entry(worktree.id(), entry_id, cx);
+                panel.update_visible_entries(None, cx);
+            });
+
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..20, cx),
+                &["v root", "    > dir1", "    > dir2",],
+                "All subdirs under dir1 should be collapsed"
+            );
+        }
+
+        // Test 2: With auto-fold enabled
+        {
+            cx.update(|_, cx| {
+                let settings = *ProjectPanelSettings::get_global(cx);
+                ProjectPanelSettings::override_global(
+                    ProjectPanelSettings {
+                        auto_fold_dirs: true,
+                        ..settings
+                    },
+                    cx,
+                );
+            });
+
+            let panel = workspace.update(cx, ProjectPanel::new).unwrap();
+
+            toggle_expand_dir(&panel, "root/dir1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir1/nested1", cx);
+
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..20, cx),
+                &[
+                    separator!("v root"),
+                    separator!("    v dir1"),
+                    separator!("        v subdir1/nested1  <== selected"),
+                    separator!("              file1.txt"),
+                    separator!("              file2.txt"),
+                    separator!("        > subdir2"),
+                    separator!("    > dir2/single_file"),
+                ],
+                "Initial state with some dirs expanded"
+            );
+
+            let entry_id = find_project_entry(&panel, "root/dir1", cx).unwrap();
+            panel.update(cx, |panel, cx| {
+                let project = panel.project.read(cx);
+                let worktree = project.worktrees(cx).next().unwrap().read(cx);
+                panel.collapse_all_for_entry(worktree.id(), entry_id, cx);
+            });
+
+            toggle_expand_dir(&panel, "root/dir1", cx);
+
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..20, cx),
+                &[
+                    separator!("v root"),
+                    separator!("    v dir1  <== selected"),
+                    separator!("        > subdir1/nested1"),
+                    separator!("        > subdir2"),
+                    separator!("    > dir2/single_file"),
+                ],
+                "Subdirs should be collapsed and folded with auto-fold enabled"
+            );
+        }
+
+        // Test 3: With auto-fold disabled
+        {
+            cx.update(|_, cx| {
+                let settings = *ProjectPanelSettings::get_global(cx);
+                ProjectPanelSettings::override_global(
+                    ProjectPanelSettings {
+                        auto_fold_dirs: false,
+                        ..settings
+                    },
+                    cx,
+                );
+            });
+
+            let panel = workspace.update(cx, ProjectPanel::new).unwrap();
+
+            toggle_expand_dir(&panel, "root/dir1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir1", cx);
+            toggle_expand_dir(&panel, "root/dir1/subdir1/nested1", cx);
+
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..20, cx),
+                &[
+                    separator!("v root"),
+                    separator!("    v dir1"),
+                    separator!("        v subdir1"),
+                    separator!("            v nested1  <== selected"),
+                    separator!("                  file1.txt"),
+                    separator!("                  file2.txt"),
+                    separator!("        > subdir2"),
+                    separator!("    > dir2"),
+                ],
+                "Initial state with some dirs expanded and auto-fold disabled"
+            );
+
+            let entry_id = find_project_entry(&panel, "root/dir1", cx).unwrap();
+            panel.update(cx, |panel, cx| {
+                let project = panel.project.read(cx);
+                let worktree = project.worktrees(cx).next().unwrap().read(cx);
+                panel.collapse_all_for_entry(worktree.id(), entry_id, cx);
+            });
+
+            toggle_expand_dir(&panel, "root/dir1", cx);
+
+            assert_eq!(
+                visible_entries_as_strings(&panel, 0..20, cx),
+                &[
+                    separator!("v root"),
+                    separator!("    v dir1  <== selected"),
+                    separator!("        > subdir1"),
+                    separator!("        > subdir2"),
+                    separator!("    > dir2"),
+                ],
+                "Subdirs should be collapsed but not folded with auto-fold disabled"
+            );
+        }
     }
 
     fn select_path(

@@ -708,7 +708,7 @@ impl LspLogView {
             editor.set_text(log_contents, window, cx);
             editor.move_to_end(&MoveToEnd, window, cx);
             editor.set_read_only(true);
-            editor.set_show_inline_completions(Some(false), window, cx);
+            editor.set_show_edit_predictions(Some(false), window, cx);
             editor.set_soft_wrap_mode(SoftWrap::EditorWidth, cx);
             editor
         });
@@ -751,7 +751,7 @@ impl LspLogView {
             );
             editor.set_text(server_info, window, cx);
             editor.set_read_only(true);
-            editor.set_show_inline_completions(Some(false), window, cx);
+            editor.set_show_edit_predictions(Some(false), window, cx);
             editor.set_soft_wrap_mode(SoftWrap::EditorWidth, cx);
             editor
         });
@@ -1148,11 +1148,12 @@ impl SearchableItem for LspLogView {
     ) {
         // Since LSP Log is read-only, it doesn't make sense to support replace operation.
     }
-    fn supported_options() -> workspace::searchable::SearchOptions {
+    fn supported_options(&self) -> workspace::searchable::SearchOptions {
         workspace::searchable::SearchOptions {
             case: true,
             word: true,
             regex: true,
+            find_in_results: false,
             // LSP log is read-only.
             replacement: false,
             selection: false,

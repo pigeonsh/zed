@@ -1255,7 +1255,7 @@ impl InlineAssistant {
                     editor.scroll_manager.set_forbid_vertical_scroll(true);
                     editor.set_show_scrollbars(false, cx);
                     editor.set_read_only(true);
-                    editor.set_show_inline_completions(Some(false), window, cx);
+                    editor.set_show_edit_predictions(Some(false), window, cx);
                     editor.highlight_rows::<DeletedLines>(
                         Anchor::min()..Anchor::max(),
                         cx.theme().status().deleted_background,
@@ -1595,22 +1595,22 @@ impl Render for PromptEditor {
                         IconButton::new("context", IconName::SettingsAlt)
                             .shape(IconButtonShape::Square)
                             .icon_size(IconSize::Small)
-                            .icon_color(Color::Muted)
-                            .tooltip(move |window, cx| {
-                                Tooltip::with_meta(
-                                    format!(
-                                        "Using {}",
-                                        LanguageModelRegistry::read_global(cx)
-                                            .active_model()
-                                            .map(|model| model.name().0)
-                                            .unwrap_or_else(|| "No model selected".into()),
-                                    ),
-                                    None,
-                                    "Change Model",
-                                    window,
-                                    cx,
-                                )
-                            }),
+                            .icon_color(Color::Muted),
+                        move |window, cx| {
+                            Tooltip::with_meta(
+                                format!(
+                                    "Using {}",
+                                    LanguageModelRegistry::read_global(cx)
+                                        .active_model()
+                                        .map(|model| model.name().0)
+                                        .unwrap_or_else(|| "No model selected".into()),
+                                ),
+                                None,
+                                "Change Model",
+                                window,
+                                cx,
+                            )
+                        },
                     ))
                     .map(|el| {
                         let CodegenStatus::Error(error) = self.codegen.read(cx).status(cx) else {
@@ -1878,19 +1878,17 @@ impl PromptEditor {
     ) {
         match event {
             EditorEvent::Edited { .. } => {
-                if let Some(workspace) = window.window_handle().downcast::<Workspace>() {
-                    workspace
-                        .update(cx, |workspace, _, cx| {
-                            let is_via_ssh = workspace
-                                .project()
-                                .update(cx, |project, _| project.is_via_ssh());
+                if let Some(workspace) = window.root::<Workspace>().flatten() {
+                    workspace.update(cx, |workspace, cx| {
+                        let is_via_ssh = workspace
+                            .project()
+                            .update(cx, |project, _| project.is_via_ssh());
 
-                            workspace
-                                .client()
-                                .telemetry()
-                                .log_edit_event("inline assist", is_via_ssh);
-                        })
-                        .log_err();
+                        workspace
+                            .client()
+                            .telemetry()
+                            .log_edit_event("inline assist", is_via_ssh);
+                    });
                 }
                 let prompt = self.editor.read(cx).text(cx);
                 if self

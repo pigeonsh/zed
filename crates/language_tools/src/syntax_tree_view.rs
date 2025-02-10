@@ -293,7 +293,7 @@ impl SyntaxTreeView {
 
 impl Render for SyntaxTreeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut rendered = div().flex_1();
+        let mut rendered = div().flex_1().bg(cx.theme().colors().editor_background);
 
         if let Some(layer) = self
             .editor
@@ -499,7 +499,7 @@ impl SyntaxTreeToolbarItemView {
 
     fn render_header(active_layer: &OwnedSyntaxLayer) -> ButtonLike {
         ButtonLike::new("syntax tree header")
-            .child(Label::new(active_layer.language.name().0))
+            .child(Label::new(active_layer.language.name()))
             .child(Label::new(format_node_range(active_layer.node())))
     }
 }

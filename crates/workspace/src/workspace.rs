@@ -21,7 +21,8 @@ use client::{
 };
 use collections::{hash_map, HashMap, HashSet};
 use derive_more::{Deref, DerefMut};
-use dock::{Dock, DockPosition, Panel, PanelButtons, PanelHandle, RESIZE_HANDLE_SIZE};
+pub use dock::Panel;
+use dock::{Dock, DockPosition, PanelButtons, PanelHandle, RESIZE_HANDLE_SIZE};
 use futures::{
     channel::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -58,7 +59,9 @@ use persistence::{
     SerializedWindowBounds, DB,
 };
 use postage::stream::Stream;
-use project::{DirectoryLister, Project, ProjectEntryId, ProjectPath, ResolvedPath, Worktree};
+use project::{
+    DirectoryLister, Project, ProjectEntryId, ProjectPath, ResolvedPath, Worktree, WorktreeId,
+};
 use remote::{ssh_session::ConnectionIdentifier, SshClientDelegate, SshConnectionOptions};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -145,6 +148,7 @@ actions!(
         Open,
         OpenFiles,
         OpenInTerminal,
+        OpenComponentPreview,
         ReloadActiveItem,
         SaveAs,
         SaveWithoutFormat,
@@ -167,12 +171,7 @@ pub struct OpenPaths {
 pub struct ActivatePane(pub usize);
 
 #[derive(Clone, Deserialize, PartialEq, JsonSchema)]
-pub struct ActivatePaneInDirection(pub SplitDirection);
-
-#[derive(Clone, Deserialize, PartialEq, JsonSchema)]
-pub struct SwapPaneInDirection(pub SplitDirection);
-
-#[derive(Clone, Deserialize, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MoveItemToPane {
     pub destination: usize,
     #[serde(default = "default_true")]
@@ -180,6 +179,7 @@ pub struct MoveItemToPane {
 }
 
 #[derive(Clone, Deserialize, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MoveItemToPaneInDirection {
     pub direction: SplitDirection,
     #[serde(default = "default_true")]
@@ -187,25 +187,25 @@ pub struct MoveItemToPaneInDirection {
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct SaveAll {
     pub save_intent: Option<SaveIntent>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct Save {
     pub save_intent: Option<SaveIntent>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Default, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct CloseAllItemsAndPanes {
     pub save_intent: Option<SaveIntent>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Default, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct CloseInactiveTabsAndPanes {
     pub save_intent: Option<SaveIntent>,
 }
@@ -214,6 +214,7 @@ pub struct CloseInactiveTabsAndPanes {
 pub struct SendKeystrokes(pub String);
 
 #[derive(Clone, Deserialize, PartialEq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Reload {
     pub binary_path: Option<PathBuf>,
 }
@@ -232,7 +233,6 @@ impl_actions!(
     workspace,
     [
         ActivatePane,
-        ActivatePaneInDirection,
         CloseAllItemsAndPanes,
         CloseInactiveTabsAndPanes,
         MoveItemToPane,
@@ -241,8 +241,21 @@ impl_actions!(
         Reload,
         Save,
         SaveAll,
-        SwapPaneInDirection,
         SendKeystrokes,
+    ]
+);
+
+actions!(
+    workspace,
+    [
+        ActivatePaneLeft,
+        ActivatePaneRight,
+        ActivatePaneUp,
+        ActivatePaneDown,
+        SwapPaneLeft,
+        SwapPaneRight,
+        SwapPaneUp,
+        SwapPaneDown,
     ]
 );
 
@@ -298,6 +311,7 @@ impl PartialEq for Toast {
 }
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpenTerminal {
     pub working_directory: PathBuf,
 }
@@ -365,7 +379,7 @@ fn prompt_and_open_paths(app_state: Arc<AppState>, options: PathPromptOptions, c
 
 pub fn init(app_state: Arc<AppState>, cx: &mut App) {
     init_settings(cx);
-    notifications::init(cx);
+    component::init();
     theme_preview::init(cx);
 
     cx.on_action(Workspace::close_global);
@@ -2201,6 +2215,18 @@ impl Workspace {
         }
     }
 
+    pub fn absolute_path_of_worktree(
+        &self,
+        worktree_id: WorktreeId,
+        cx: &mut Context<Self>,
+    ) -> Option<PathBuf> {
+        self.project
+            .read(cx)
+            .worktree_for_id(worktree_id, cx)
+            // TODO: use `abs_path` or `root_dir`
+            .map(|wt| wt.read(cx).abs_path().as_ref().to_path_buf())
+    }
+
     fn add_folder_to_project(
         &mut self,
         _: &AddFolderToProject,
@@ -2694,9 +2720,7 @@ impl Workspace {
         cx: &mut App,
     ) {
         if let Some(text) = item.telemetry_event_text(cx) {
-            self.client()
-                .telemetry()
-                .report_app_event(format!("{}: open", text));
+            telemetry::event!(text);
         }
 
         pane.update(cx, |pane, cx| {
@@ -3224,9 +3248,31 @@ impl Workspace {
         }
     }
 
-    pub fn resize_pane(&mut self, axis: gpui::Axis, amount: Pixels, cx: &mut Context<Self>) {
-        self.center
-            .resize(&self.active_pane, axis, amount, &self.bounds);
+    pub fn resize_pane(
+        &mut self,
+        axis: gpui::Axis,
+        amount: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let docks = self.all_docks();
+        let active_dock = docks
+            .into_iter()
+            .find(|dock| dock.focus_handle(cx).contains_focused(window, cx));
+
+        if let Some(dock) = active_dock {
+            let Some(panel_size) = dock.read(cx).active_panel_size(window, cx) else {
+                return;
+            };
+            match dock.read(cx).position() {
+                DockPosition::Left => resize_left_dock(panel_size + amount, self, window, cx),
+                DockPosition::Bottom => resize_bottom_dock(panel_size + amount, self, window, cx),
+                DockPosition::Right => resize_right_dock(panel_size + amount, self, window, cx),
+            }
+        } else {
+            self.center
+                .resize(&self.active_pane, axis, amount, &self.bounds);
+        }
         cx.notify();
     }
 
@@ -4396,10 +4442,12 @@ impl Workspace {
         if let Some(focus_on) = focus_on {
             focus_on.update(cx, |pane, cx| window.focus(&pane.focus_handle(cx)));
         } else {
-            self.panes
-                .last()
-                .unwrap()
-                .update(cx, |pane, cx| window.focus(&pane.focus_handle(cx)));
+            if self.active_pane() == pane {
+                self.panes
+                    .last()
+                    .unwrap()
+                    .update(cx, |pane, cx| window.focus(&pane.focus_handle(cx)));
+            }
         }
         if self.last_active_center_pane == Some(pane.downgrade()) {
             self.last_active_center_pane = None;
@@ -4787,29 +4835,38 @@ impl Workspace {
                     workspace.activate_previous_window(cx)
                 }),
             )
-            .on_action(
-                cx.listener(|workspace, action: &ActivatePaneInDirection, window, cx| {
-                    workspace.activate_pane_in_direction(action.0, window, cx)
-                }),
-            )
+            .on_action(cx.listener(|workspace, _: &ActivatePaneLeft, window, cx| {
+                workspace.activate_pane_in_direction(SplitDirection::Left, window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &ActivatePaneRight, window, cx| {
+                workspace.activate_pane_in_direction(SplitDirection::Right, window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &ActivatePaneUp, window, cx| {
+                workspace.activate_pane_in_direction(SplitDirection::Up, window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &ActivatePaneDown, window, cx| {
+                workspace.activate_pane_in_direction(SplitDirection::Down, window, cx)
+            }))
             .on_action(cx.listener(|workspace, _: &ActivateNextPane, window, cx| {
                 workspace.activate_next_pane(window, cx)
             }))
-            .on_action(
-                cx.listener(|workspace, action: &ActivatePaneInDirection, window, cx| {
-                    workspace.activate_pane_in_direction(action.0, window, cx)
-                }),
-            )
             .on_action(cx.listener(
                 |workspace, action: &MoveItemToPaneInDirection, window, cx| {
                     workspace.move_item_to_pane_in_direction(action, window, cx)
                 },
             ))
-            .on_action(
-                cx.listener(|workspace, action: &SwapPaneInDirection, _, cx| {
-                    workspace.swap_pane_in_direction(action.0, cx)
-                }),
-            )
+            .on_action(cx.listener(|workspace, _: &SwapPaneLeft, _, cx| {
+                workspace.swap_pane_in_direction(SplitDirection::Left, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &SwapPaneRight, _, cx| {
+                workspace.swap_pane_in_direction(SplitDirection::Right, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &SwapPaneUp, _, cx| {
+                workspace.swap_pane_in_direction(SplitDirection::Up, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &SwapPaneDown, _, cx| {
+                workspace.swap_pane_in_direction(SplitDirection::Down, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
                 this.toggle_dock(DockPosition::Left, window, cx);
             }))
@@ -5174,8 +5231,9 @@ fn notify_if_database_failed(workspace: WindowHandle<Workspace>, cx: &mut AsyncA
                     |cx| {
                         cx.new(|_| {
                             MessageNotification::new("Failed to load the database file.")
-                                .with_click_message("File an issue")
-                                .on_click(|_window, cx| cx.open_url(REPORT_ISSUE_URL))
+                                .primary_message("File an Issue")
+                                .primary_icon(IconName::Plus)
+                                .primary_on_click(|_window, cx| cx.open_url(REPORT_ISSUE_URL))
                         })
                     },
                 );
@@ -5607,36 +5665,6 @@ impl std::fmt::Debug for OpenPaths {
     }
 }
 
-pub fn activate_workspace_for_project(
-    cx: &mut App,
-    predicate: impl Fn(&Project, &App) -> bool + Send + 'static,
-) -> Option<WindowHandle<Workspace>> {
-    for window in cx.windows() {
-        let Some(workspace) = window.downcast::<Workspace>() else {
-            continue;
-        };
-
-        let predicate = workspace
-            .update(cx, |workspace, window, cx| {
-                let project = workspace.project.read(cx);
-                if predicate(project, cx) {
-                    window.activate_window();
-                    true
-                } else {
-                    false
-                }
-            })
-            .log_err()
-            .unwrap_or(false);
-
-        if predicate {
-            return Some(workspace);
-        }
-    }
-
-    None
-}
-
 pub async fn last_opened_workspace_location() -> Option<SerializedWorkspaceLocation> {
     DB.last_workspace().await.log_err().flatten()
 }
@@ -5974,6 +6002,19 @@ pub fn open_paths(
                 .all(|file| !file.is_dir)
             {
                 cx.update(|cx| {
+                    if let Some(window) = cx
+                        .active_window()
+                        .and_then(|window| window.downcast::<Workspace>())
+                    {
+                        if let Ok(workspace) = window.read(cx) {
+                            let project = workspace.project().read(cx);
+                            if project.is_local() && !project.is_via_collab() {
+                                existing = Some(window);
+                                open_visible = OpenVisible::None;
+                                return;
+                            }
+                        }
+                    }
                     for window in local_workspace_windows(cx) {
                         if let Ok(workspace) = window.read(cx) {
                             let project = workspace.project().read(cx);
@@ -6147,14 +6188,10 @@ pub fn open_ssh_project(
 
         cx.update_window(window.into(), |_, window, cx| {
             window.replace_root(cx, |window, cx| {
+                telemetry::event!("SSH Project Opened");
+
                 let mut workspace =
                     Workspace::new(Some(workspace_id), project, app_state.clone(), window, cx);
-
-                workspace
-                    .client()
-                    .telemetry()
-                    .report_app_event("open ssh project".to_string());
-
                 workspace.set_serialized_ssh_project(serialized_ssh_project);
                 workspace
             });
@@ -8142,6 +8179,7 @@ mod tests {
                 pane.close_active_item(
                     &CloseActiveItem {
                         save_intent: Some(SaveIntent::Close),
+                        close_pinned: false,
                     },
                     window,
                     cx,
@@ -8246,7 +8284,14 @@ mod tests {
         });
         let close_singleton_buffer_task = pane
             .update_in(cx, |pane, window, cx| {
-                pane.close_active_item(&CloseActiveItem { save_intent: None }, window, cx)
+                pane.close_active_item(
+                    &CloseActiveItem {
+                        save_intent: None,
+                        close_pinned: false,
+                    },
+                    window,
+                    cx,
+                )
             })
             .expect("should have active singleton buffer to close");
         cx.background_executor.run_until_parked();
@@ -8352,7 +8397,14 @@ mod tests {
         });
         let _close_multi_buffer_task = pane
             .update_in(cx, |pane, window, cx| {
-                pane.close_active_item(&CloseActiveItem { save_intent: None }, window, cx)
+                pane.close_active_item(
+                    &CloseActiveItem {
+                        save_intent: None,
+                        close_pinned: false,
+                    },
+                    window,
+                    cx,
+                )
             })
             .expect("should have active multi buffer to close");
         cx.background_executor.run_until_parked();
@@ -8443,7 +8495,14 @@ mod tests {
         });
         let close_multi_buffer_task = pane
             .update_in(cx, |pane, window, cx| {
-                pane.close_active_item(&CloseActiveItem { save_intent: None }, window, cx)
+                pane.close_active_item(
+                    &CloseActiveItem {
+                        save_intent: None,
+                        close_pinned: false,
+                    },
+                    window,
+                    cx,
+                )
             })
             .expect("should have active multi buffer to close");
         cx.background_executor.run_until_parked();

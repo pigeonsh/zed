@@ -134,7 +134,6 @@ impl AssistantPanel {
                         project,
                         prompt_builder.clone(),
                         slash_commands,
-                        tools.clone(),
                         cx,
                     )
                 })?
@@ -443,7 +442,7 @@ impl AssistantPanel {
 
     fn handle_assistant_configuration_event(
         &mut self,
-        _model: &Entity<AssistantConfiguration>,
+        _entity: &Entity<AssistantConfiguration>,
         event: &AssistantConfigurationEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -612,9 +611,16 @@ impl AssistantPanel {
                     SharedString::from(context_editor.read(cx).title(cx).to_string())
                 })
                 .unwrap_or_else(|| SharedString::from("Loading Summary…")),
-            ActiveView::History => "History / Thread".into(),
-            ActiveView::PromptEditorHistory => "History / Prompt Editor".into(),
-            ActiveView::Configuration => "Configuration".into(),
+            ActiveView::History | ActiveView::PromptEditorHistory => "History".into(),
+            ActiveView::Configuration => "Assistant Settings".into(),
+        };
+
+        let sub_title = match self.active_view {
+            ActiveView::Thread => None,
+            ActiveView::PromptEditor => None,
+            ActiveView::History => Some("Thread"),
+            ActiveView::PromptEditorHistory => Some("Prompt Editor"),
+            ActiveView::Configuration => None,
         };
 
         h_flex()
@@ -627,7 +633,24 @@ impl AssistantPanel {
             .bg(cx.theme().colors().tab_bar_background)
             .border_b_1()
             .border_color(cx.theme().colors().border)
-            .child(h_flex().child(Label::new(title)))
+            .child(
+                h_flex()
+                    .child(Label::new(title))
+                    .when(sub_title.is_some(), |this| {
+                        this.child(
+                            h_flex()
+                                .pl_1p5()
+                                .gap_1p5()
+                                .child(
+                                    Label::new("/")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Disabled)
+                                        .alpha(0.5),
+                                )
+                                .child(Label::new(sub_title.unwrap())),
+                        )
+                    }),
+            )
             .child(
                 h_flex()
                     .h_full()
@@ -637,11 +660,11 @@ impl AssistantPanel {
                     .gap(DynamicSpacing::Base02.rems(cx))
                     .child(
                         PopoverMenu::new("assistant-toolbar-new-popover-menu")
-                            .trigger(
+                            .trigger_with_tooltip(
                                 IconButton::new("new", IconName::Plus)
                                     .icon_size(IconSize::Small)
-                                    .style(ButtonStyle::Subtle)
-                                    .tooltip(Tooltip::text("New…")),
+                                    .style(ButtonStyle::Subtle),
+                                Tooltip::text("New…"),
                             )
                             .anchor(Corner::TopRight)
                             .with_handle(self.new_item_context_menu_handle.clone())
@@ -654,11 +677,11 @@ impl AssistantPanel {
                     )
                     .child(
                         PopoverMenu::new("assistant-toolbar-history-popover-menu")
-                            .trigger(
+                            .trigger_with_tooltip(
                                 IconButton::new("open-history", IconName::HistoryRerun)
                                     .icon_size(IconSize::Small)
-                                    .style(ButtonStyle::Subtle)
-                                    .tooltip(Tooltip::text("History…")),
+                                    .style(ButtonStyle::Subtle),
+                                Tooltip::text("History…"),
                             )
                             .anchor(Corner::TopRight)
                             .with_handle(self.open_history_context_menu_handle.clone())
@@ -676,7 +699,7 @@ impl AssistantPanel {
                         IconButton::new("configure-assistant", IconName::Settings)
                             .icon_size(IconSize::Small)
                             .style(ButtonStyle::Subtle)
-                            .tooltip(Tooltip::text("Configure Assistant"))
+                            .tooltip(Tooltip::text("Assistant Settings"))
                             .on_click(move |_event, window, cx| {
                                 window.dispatch_action(OpenConfiguration.boxed_clone(), cx);
                             }),
