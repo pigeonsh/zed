@@ -15,6 +15,7 @@ use std::{
 use text::Anchor;
 use util::paths::PathMatcher;
 
+#[derive(Debug)]
 pub enum SearchResult {
     Buffer {
         buffer: Entity<Buffer>,
@@ -55,7 +56,7 @@ impl SearchInputs {
 #[derive(Clone, Debug)]
 pub enum SearchQuery {
     Text {
-        search: Arc<AhoCorasick>,
+        search: AhoCorasick,
         replacement: Option<String>,
         whole_word: bool,
         case_sensitive: bool,
@@ -101,7 +102,7 @@ impl SearchQuery {
             buffers,
         };
         Ok(Self::Text {
-            search: Arc::new(search),
+            search,
             replacement: None,
             whole_word,
             case_sensitive,
@@ -137,7 +138,7 @@ impl SearchQuery {
             query = word_query
         }
 
-        let multiline = query.contains('\n') || query.contains("\\n") || query.contains("\\s");
+        let multiline = query.contains('\n') || query.contains("\\n");
         let regex = RegexBuilder::new(&query)
             .case_insensitive(!case_sensitive)
             .build()?;

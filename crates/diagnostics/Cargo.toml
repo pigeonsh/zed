@@ -24,13 +24,13 @@ log.workspace = true
 lsp.workspace = true
 project.workspace = true
 rand.workspace = true
-schemars.workspace = true
 serde.workspace = true
 settings.workspace = true
 theme.workspace = true
 ui.workspace = true
 util.workspace = true
 workspace.workspace = true
+workspace-hack.workspace = true
 
 [dev-dependencies]
 client = { workspace = true, features = ["test-support"] }

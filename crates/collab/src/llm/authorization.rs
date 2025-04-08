@@ -27,7 +27,7 @@ fn authorize_access_to_model(
     }
 
     if provider == LanguageModelProvider::Anthropic {
-        if model == "claude-3-5-sonnet" {
+        if model == "claude-3-5-sonnet" || model == "claude-3-7-sonnet" {
             return Ok(());
         }
 
@@ -193,7 +193,9 @@ mod tests {
                 .to_vec();
             assert_eq!(
                 String::from_utf8(response_body).unwrap(),
-                format!("access to {provider:?} models is not available in your region ({country_code})")
+                format!(
+                    "access to {provider:?} models is not available in your region ({country_code})"
+                )
             );
         }
     }

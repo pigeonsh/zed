@@ -5,7 +5,7 @@ use anyhow::Result;
 use clock::SystemClock;
 use futures::channel::mpsc;
 use futures::{Future, StreamExt};
-use gpui::{App, BackgroundExecutor, Task};
+use gpui::{App, AppContext as _, BackgroundExecutor, Task};
 use http_client::{self, AsyncBody, HttpClient, HttpClientWithUrl, Method, Request};
 use parking_lot::Mutex;
 use release_channel::ReleaseChannel;
@@ -17,7 +17,7 @@ use std::io::Write;
 use std::sync::LazyLock;
 use std::time::Instant;
 use std::{env, mem, path::PathBuf, sync::Arc, time::Duration};
-use telemetry_events::{AssistantEvent, AssistantPhase, Event, EventRequestBody, EventWrapper};
+use telemetry_events::{AssistantEventData, AssistantPhase, Event, EventRequestBody, EventWrapper};
 use util::{ResultExt, TryFutureExt};
 use worktree::{UpdatedEntriesSet, WorktreeId};
 
@@ -219,18 +219,17 @@ impl Telemetry {
         }));
         Self::log_file_path();
 
-        cx.background_executor()
-            .spawn({
-                let state = state.clone();
-                let os_version = os_version();
-                state.lock().os_version = Some(os_version.clone());
-                async move {
-                    if let Some(tempfile) = File::create(Self::log_file_path()).log_err() {
-                        state.lock().log_file = Some(tempfile);
-                    }
+        cx.background_spawn({
+            let state = state.clone();
+            let os_version = os_version();
+            state.lock().os_version = Some(os_version.clone());
+            async move {
+                if let Some(tempfile) = File::create(Self::log_file_path()).log_err() {
+                    state.lock().log_file = Some(tempfile);
                 }
-            })
-            .detach();
+            }
+        })
+        .detach();
 
         cx.observe_global::<SettingsStore>({
             let state = state.clone();
@@ -252,17 +251,16 @@ impl Telemetry {
         let (tx, mut rx) = mpsc::unbounded();
         ::telemetry::init(tx);
 
-        cx.background_executor()
-            .spawn({
-                let this = Arc::downgrade(&this);
-                async move {
-                    while let Some(event) = rx.next().await {
-                        let Some(state) = this.upgrade() else { break };
-                        state.report_event(Event::Flexible(event))
-                    }
+        cx.background_spawn({
+            let this = Arc::downgrade(&this);
+            async move {
+                while let Some(event) = rx.next().await {
+                    let Some(state) = this.upgrade() else { break };
+                    state.report_event(Event::Flexible(event))
                 }
-            })
-            .detach();
+            }
+        })
+        .detach();
 
         // We should only ever have one instance of Telemetry, leak the subscription to keep it alive
         // rather than store in TelemetryState, complicating spawn as subscriptions are not Send
@@ -275,14 +273,14 @@ impl Telemetry {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn shutdown_telemetry(self: &Arc<Self>) -> impl Future<Output = ()> {
+    fn shutdown_telemetry(self: &Arc<Self>) -> impl Future<Output = ()> + use<> {
         Task::ready(())
     }
 
     // Skip calling this function in tests.
     // TestAppContext ends up calling this function on shutdown and it panics when trying to find the TelemetrySettings
     #[cfg(not(any(test, feature = "test-support")))]
-    fn shutdown_telemetry(self: &Arc<Self>) -> impl Future<Output = ()> {
+    fn shutdown_telemetry(self: &Arc<Self>) -> impl Future<Output = ()> + use<> {
         telemetry::event!("App Closed");
         // TODO: close final edit period and make sure it's sent
         Task::ready(())
@@ -331,7 +329,7 @@ impl Telemetry {
         drop(state);
     }
 
-    pub fn report_assistant_event(self: &Arc<Self>, event: AssistantEvent) {
+    pub fn report_assistant_event(self: &Arc<Self>, event: AssistantEventData) {
         let event_type = match event.phase {
             AssistantPhase::Response => "Assistant Responded",
             AssistantPhase::Invoked => "Assistant Invoked",
@@ -420,6 +418,8 @@ impl Telemetry {
 
     fn report_event(self: &Arc<Self>, event: Event) {
         let mut state = self.state.lock();
+        // RUST_LOG=telemetry=trace to debug telemetry events
+        log::trace!(target: "telemetry", "{:?}", event);
 
         if !state.settings.metrics {
             return;

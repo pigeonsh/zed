@@ -1,7 +1,5 @@
-#![allow(missing_docs)]
-
 use crate::prelude::*;
-use crate::{h_flex, Icon, IconName, IconSize, Label};
+use crate::{Icon, IconName, IconSize, Label, h_flex};
 
 #[derive(IntoElement)]
 pub struct ListSubHeader {

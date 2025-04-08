@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse::Parse, parse::ParseStream, parse_macro_input, punctuated::Punctuated, LitInt, Token,
+    LitInt, Token, parse::Parse, parse::ParseStream, parse_macro_input, punctuated::Punctuated,
 };
 
 struct DynamicSpacingInput {
@@ -157,7 +157,7 @@ pub fn derive_spacing(input: TokenStream) -> TokenStream {
 
             /// Returns the spacing value in pixels.
             pub fn px(&self, cx: &App) -> Pixels {
-                let ui_font_size_f32: f32 = ThemeSettings::get_global(cx).ui_font_size.into();
+                let ui_font_size_f32: f32 = ThemeSettings::get_global(cx).ui_font_size(cx).into();
                 px(ui_font_size_f32 * self.spacing_ratio(cx))
             }
         }

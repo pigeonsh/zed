@@ -42,8 +42,7 @@ impl SemanticDb {
         cx: &mut AsyncApp,
     ) -> Result<Self> {
         let db_connection = cx
-            .background_executor()
-            .spawn(async move {
+            .background_spawn(async move {
                 std::fs::create_dir_all(&db_path)?;
                 unsafe {
                     heed::EnvOpenOptions::new()
@@ -270,7 +269,7 @@ mod tests {
     use embedding_index::{ChunkedFile, EmbeddingIndex};
     use feature_flags::FeatureFlagAppExt;
     use fs::FakeFs;
-    use futures::{future::BoxFuture, FutureExt};
+    use futures::{FutureExt, future::BoxFuture};
     use gpui::TestAppContext;
     use indexing::IndexingEntrySet;
     use language::language_settings::AllLanguageSettings;
@@ -432,8 +431,7 @@ mod tests {
                 let worktree = search_result.worktree.read(cx);
                 let entry_abs_path = worktree.abs_path().join(&search_result.path);
                 let fs = project.read(cx).fs().clone();
-                cx.background_executor()
-                    .spawn(async move { fs.load(&entry_abs_path).await.unwrap() })
+                cx.background_spawn(async move { fs.load(&entry_abs_path).await.unwrap() })
             })
             .await;
 

@@ -1,15 +1,14 @@
-use crate::wasm_host::{wit::ToWasmtimeResult, WasmState};
+use crate::wasm_host::{WasmState, wit::ToWasmtimeResult};
 use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
-use async_trait::async_trait;
 use extension::{ExtensionLanguageServerProxy, KeyValueStoreDelegate, WorktreeDelegate};
-use futures::{io::BufReader, FutureExt as _};
-use futures::{lock::Mutex, AsyncReadExt};
+use futures::{AsyncReadExt, lock::Mutex};
+use futures::{FutureExt as _, io::BufReader};
 use language::LanguageName;
-use language::{language_settings::AllLanguageSettings, LanguageServerBinaryStatus};
+use language::{BinaryStatus, language_settings::AllLanguageSettings};
 use project::project_settings::ProjectSettings;
 use semantic_version::SemanticVersion;
 use std::{
@@ -228,7 +227,6 @@ impl From<latest::lsp::SymbolKind> for lsp::SymbolKind {
     }
 }
 
-#[async_trait]
 impl HostKeyValueStore for WasmState {
     async fn insert(
         &mut self,
@@ -246,7 +244,6 @@ impl HostKeyValueStore for WasmState {
     }
 }
 
-#[async_trait]
 impl HostWorktree for WasmState {
     async fn id(&mut self, delegate: Resource<Arc<dyn WorktreeDelegate>>) -> wasmtime::Result<u64> {
         latest::HostWorktree::id(self, delegate).await
@@ -288,10 +285,8 @@ impl HostWorktree for WasmState {
     }
 }
 
-#[async_trait]
 impl common::Host for WasmState {}
 
-#[async_trait]
 impl http_client::Host for WasmState {
     async fn fetch(
         &mut self,
@@ -328,7 +323,6 @@ impl http_client::Host for WasmState {
     }
 }
 
-#[async_trait]
 impl http_client::HostHttpResponseStream for WasmState {
     async fn next_chunk(
         &mut self,
@@ -415,10 +409,8 @@ async fn convert_response(
     Ok(extension_response)
 }
 
-#[async_trait]
 impl lsp::Host for WasmState {}
 
-#[async_trait]
 impl ExtensionImports for WasmState {
     async fn get_settings(
         &mut self,
@@ -482,16 +474,10 @@ impl ExtensionImports for WasmState {
         status: LanguageServerInstallationStatus,
     ) -> wasmtime::Result<()> {
         let status = match status {
-            LanguageServerInstallationStatus::CheckingForUpdate => {
-                LanguageServerBinaryStatus::CheckingForUpdate
-            }
-            LanguageServerInstallationStatus::Downloading => {
-                LanguageServerBinaryStatus::Downloading
-            }
-            LanguageServerInstallationStatus::None => LanguageServerBinaryStatus::None,
-            LanguageServerInstallationStatus::Failed(error) => {
-                LanguageServerBinaryStatus::Failed { error }
-            }
+            LanguageServerInstallationStatus::CheckingForUpdate => BinaryStatus::CheckingForUpdate,
+            LanguageServerInstallationStatus::Downloading => BinaryStatus::Downloading,
+            LanguageServerInstallationStatus::None => BinaryStatus::None,
+            LanguageServerInstallationStatus::Failed(error) => BinaryStatus::Failed { error },
         };
 
         self.host

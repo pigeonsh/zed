@@ -17,12 +17,34 @@ pub struct WorkspaceSettings {
     pub show_call_status_icon: bool,
     pub autosave: AutosaveSetting,
     pub restore_on_startup: RestoreOnStartupBehavior,
+    pub restore_on_file_reopen: bool,
     pub drop_target_size: f32,
-    pub when_closing_with_no_tabs: CloseWindowWhenNoItems,
     pub use_system_path_prompts: bool,
+    pub use_system_prompts: bool,
     pub command_aliases: HashMap<String, String>,
     pub show_user_picture: bool,
     pub max_tabs: Option<NonZeroUsize>,
+    pub when_closing_with_no_tabs: CloseWindowWhenNoItems,
+    pub on_last_window_closed: OnLastWindowClosed,
+}
+
+#[derive(Copy, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnLastWindowClosed {
+    /// Match platform conventions by default, so don't quit on macOS, and quit on other platforms
+    #[default]
+    PlatformDefault,
+    /// Quit the application the last window is closed
+    QuitApp,
+}
+
+impl OnLastWindowClosed {
+    pub fn is_quit_app(&self) -> bool {
+        match self {
+            OnLastWindowClosed::PlatformDefault => false,
+            OnLastWindowClosed::QuitApp => true,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -71,7 +93,7 @@ impl CloseWindowWhenNoItems {
     }
 }
 
-#[derive(Copy, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RestoreOnStartupBehavior {
     /// Always start with an empty editor
@@ -113,6 +135,15 @@ pub struct WorkspaceSettingsContent {
     /// Values: none, last_workspace, last_session
     /// Default: last_session
     pub restore_on_startup: Option<RestoreOnStartupBehavior>,
+    /// Whether to attempt to restore previous file's state when opening it again.
+    /// The state is stored per pane.
+    /// When disabled, defaults are applied instead of the state restoration.
+    ///
+    /// E.g. for editors, selections, folds and scroll positions are restored, if the same file is closed and, later, opened again in the same pane.
+    /// When disabled, a single selection in the very beginning of the file, zero scroll position and no folds state is used as a default.
+    ///
+    /// Default: true
+    pub restore_on_file_reopen: Option<bool>,
     /// The size of the workspace split drop targets on the outer edges.
     /// Given as a fraction that will be multiplied by the smaller dimension of the workspace.
     ///
@@ -127,6 +158,13 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: true
     pub use_system_path_prompts: Option<bool>,
+    /// Whether to use the system provided prompts.
+    /// When set to false, Zed will use the built-in prompts.
+    /// Note that this setting has no effect on Linux, where Zed will always
+    /// use the built-in prompts.
+    ///
+    /// Default: true
+    pub use_system_prompts: Option<bool>,
     /// Aliases for the command palette. When you type a key in this map,
     /// it will be assumed to equal the value.
     ///
@@ -136,11 +174,15 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: true
     pub show_user_picture: Option<bool>,
-    // Maximum open tabs in a pane. Will not close an unsaved
-    // tab. Set to `None` for unlimited tabs.
-    //
-    // Default: none
+    /// Maximum open tabs in a pane. Will not close an unsaved
+    /// tab. Set to `None` for unlimited tabs.
+    ///
+    /// Default: none
     pub max_tabs: Option<NonZeroUsize>,
+    /// What to do when the last window is closed
+    ///
+    /// Default: auto (nothing on macOS, "app quit" otherwise)
+    pub on_last_window_closed: Option<OnLastWindowClosed>,
 }
 
 #[derive(Deserialize)]

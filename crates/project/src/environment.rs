@@ -1,11 +1,13 @@
-use futures::{future::Shared, FutureExt};
+use futures::{
+    FutureExt,
+    future::{Shared, WeakShared},
+};
 use std::{path::Path, sync::Arc};
 use util::ResultExt;
 
 use collections::HashMap;
-use gpui::{App, AppContext as _, Context, Entity, Task};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use settings::Settings as _;
-use worktree::WorktreeId;
 
 use crate::{
     project_settings::{DirenvSettings, ProjectSettings},
@@ -13,11 +15,16 @@ use crate::{
 };
 
 pub struct ProjectEnvironment {
-    worktree_store: Entity<WorktreeStore>,
     cli_environment: Option<HashMap<String, String>>,
-    environments: HashMap<WorktreeId, Shared<Task<Option<HashMap<String, String>>>>>,
-    environment_error_messages: HashMap<WorktreeId, EnvironmentErrorMessage>,
+    environments: HashMap<Arc<Path>, WeakShared<Task<Option<HashMap<String, String>>>>>,
+    environment_error_messages: HashMap<Arc<Path>, EnvironmentErrorMessage>,
 }
+
+pub enum ProjectEnvironmentEvent {
+    ErrorsUpdated,
+}
+
+impl EventEmitter<ProjectEnvironmentEvent> for ProjectEnvironment {}
 
 impl ProjectEnvironment {
     pub fn new(
@@ -27,24 +34,20 @@ impl ProjectEnvironment {
     ) -> Entity<Self> {
         cx.new(|cx| {
             cx.subscribe(worktree_store, |this: &mut Self, _, event, _| {
-                if let WorktreeStoreEvent::WorktreeRemoved(_, id) = event {
-                    this.remove_worktree_environment(*id);
+                if let WorktreeStoreEvent::WorktreeRemoved(_, _) = event {
+                    this.environments.retain(|_, weak| weak.upgrade().is_some());
+                    this.environment_error_messages
+                        .retain(|abs_path, _| this.environments.contains_key(abs_path));
                 }
             })
             .detach();
 
             Self {
-                worktree_store: worktree_store.clone(),
                 cli_environment,
                 environments: Default::default(),
                 environment_error_messages: Default::default(),
             }
         })
-    }
-
-    pub(crate) fn remove_worktree_environment(&mut self, worktree_id: WorktreeId) {
-        self.environment_error_messages.remove(&worktree_id);
-        self.environments.remove(&worktree_id);
     }
 
     /// Returns the inherited CLI environment, if this project was opened from the Zed CLI.
@@ -57,27 +60,26 @@ impl ProjectEnvironment {
         }
     }
 
-    /// Returns an iterator over all pairs `(worktree_id, error_message)` of
+    /// Returns an iterator over all pairs `(abs_path, error_message)` of
     /// environment errors associated with this project environment.
     pub(crate) fn environment_errors(
         &self,
-    ) -> impl Iterator<Item = (&WorktreeId, &EnvironmentErrorMessage)> {
+    ) -> impl Iterator<Item = (&Arc<Path>, &EnvironmentErrorMessage)> {
         self.environment_error_messages.iter()
     }
 
-    pub(crate) fn remove_environment_error(&mut self, worktree_id: WorktreeId) {
-        self.environment_error_messages.remove(&worktree_id);
+    pub(crate) fn remove_environment_error(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
+        self.environment_error_messages.remove(abs_path);
+        cx.emit(ProjectEnvironmentEvent::ErrorsUpdated);
     }
 
     /// Returns the project environment, if possible.
     /// If the project was opened from the CLI, then the inherited CLI environment is returned.
-    /// If it wasn't opened from the CLI, and a worktree is given, then a shell is spawned in
-    /// the worktree's path, to get environment variables as if the user has `cd`'d into
-    /// the worktrees path.
+    /// If it wasn't opened from the CLI, and an absolute path is given, then a shell is spawned in
+    /// that directory, to get environment variables as if the user has `cd`'d there.
     pub(crate) fn get_environment(
         &mut self,
-        worktree_id: Option<WorktreeId>,
-        worktree_abs_path: Option<Arc<Path>>,
+        abs_path: Option<Arc<Path>>,
         cx: &Context<Self>,
     ) -> Shared<Task<Option<HashMap<String, String>>>> {
         if cfg!(any(test, feature = "test-support")) {
@@ -86,7 +88,7 @@ impl ProjectEnvironment {
 
         if let Some(cli_environment) = self.get_cli_environment() {
             return cx
-                .spawn(|_, _| async move {
+                .spawn(async move |_, _| {
                     let path = cli_environment
                         .get("PATH")
                         .map(|path| path.as_str())
@@ -100,73 +102,25 @@ impl ProjectEnvironment {
                 .shared();
         }
 
-        let Some((worktree_id, worktree_abs_path)) = worktree_id.zip(worktree_abs_path) else {
+        let Some(abs_path) = abs_path else {
             return Task::ready(None).shared();
         };
 
-        if self
-            .worktree_store
-            .read(cx)
-            .worktree_for_id(worktree_id, cx)
-            .map(|w| !w.read(cx).is_local())
-            .unwrap_or(true)
+        if let Some(existing) = self
+            .environments
+            .get(&abs_path)
+            .and_then(|weak| weak.upgrade())
         {
-            return Task::ready(None).shared();
-        }
-
-        if let Some(task) = self.environments.get(&worktree_id) {
-            task.clone()
+            existing
         } else {
-            let task = self
-                .get_worktree_env(worktree_id, worktree_abs_path, cx)
-                .shared();
-            self.environments.insert(worktree_id, task.clone());
-            task
+            let env = get_directory_env(abs_path.clone(), cx).shared();
+            self.environments.insert(
+                abs_path.clone(),
+                env.downgrade()
+                    .expect("environment task has not been polled yet"),
+            );
+            env
         }
-    }
-
-    fn get_worktree_env(
-        &mut self,
-        worktree_id: WorktreeId,
-        worktree_abs_path: Arc<Path>,
-        cx: &Context<Self>,
-    ) -> Task<Option<HashMap<String, String>>> {
-        let load_direnv = ProjectSettings::get_global(cx).load_direnv.clone();
-
-        cx.spawn(|this, mut cx| async move {
-            let (mut shell_env, error_message) = cx
-                .background_executor()
-                .spawn({
-                    let worktree_abs_path = worktree_abs_path.clone();
-                    async move {
-                        load_worktree_shell_environment(&worktree_abs_path, &load_direnv).await
-                    }
-                })
-                .await;
-
-            if let Some(shell_env) = shell_env.as_mut() {
-                let path = shell_env
-                    .get("PATH")
-                    .map(|path| path.as_str())
-                    .unwrap_or_default();
-                log::info!(
-                    "using project environment variables shell launched in {:?}. PATH={:?}",
-                    worktree_abs_path,
-                    path
-                );
-
-                set_origin_marker(shell_env, EnvironmentOrigin::WorktreeShell);
-            }
-
-            if let Some(error) = error_message {
-                this.update(&mut cx, |this, _| {
-                    this.environment_error_messages.insert(worktree_id, error);
-                })
-                .log_err();
-            }
-
-            shell_env
-        })
     }
 }
 
@@ -190,7 +144,14 @@ impl From<EnvironmentOrigin> for String {
     }
 }
 
+#[derive(Debug)]
 pub struct EnvironmentErrorMessage(pub String);
+
+impl std::fmt::Display for EnvironmentErrorMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl EnvironmentErrorMessage {
     #[allow(dead_code)]
@@ -199,25 +160,25 @@ impl EnvironmentErrorMessage {
     }
 }
 
-async fn load_worktree_shell_environment(
-    worktree_abs_path: &Path,
+async fn load_directory_shell_environment(
+    abs_path: &Path,
     load_direnv: &DirenvSettings,
 ) -> (
     Option<HashMap<String, String>>,
     Option<EnvironmentErrorMessage>,
 ) {
-    match smol::fs::metadata(worktree_abs_path).await {
+    match smol::fs::metadata(abs_path).await {
         Ok(meta) => {
             let dir = if meta.is_dir() {
-                worktree_abs_path
-            } else if let Some(parent) = worktree_abs_path.parent() {
+                abs_path
+            } else if let Some(parent) = abs_path.parent() {
                 parent
             } else {
                 return (
                     None,
                     Some(EnvironmentErrorMessage(format!(
                         "Failed to load shell environment in {}: not a directory",
-                        worktree_abs_path.display()
+                        abs_path.display()
                     ))),
                 );
             };
@@ -228,7 +189,7 @@ async fn load_worktree_shell_environment(
             None,
             Some(EnvironmentErrorMessage(format!(
                 "Failed to load shell environment in {}: {}",
-                worktree_abs_path.display(),
+                abs_path.display(),
                 err
             ))),
         ),
@@ -269,7 +230,7 @@ async fn load_shell_environment(
     Option<HashMap<String, String>>,
     Option<EnvironmentErrorMessage>,
 ) {
-    use crate::direnv::{load_direnv_environment, DirenvError};
+    use crate::direnv::{DirenvError, load_direnv_environment};
     use std::path::PathBuf;
     use util::parse_env_output;
 
@@ -278,10 +239,12 @@ async fn load_shell_environment(
         (None, Some(message))
     }
 
-    let marker = "ZED_SHELL_START";
+    const MARKER: &str = "ZED_SHELL_START";
     let Some(shell) = std::env::var("SHELL").log_err() else {
         return message("Failed to get login environment. SHELL environment variable is not set");
     };
+    let shell_path = PathBuf::from(&shell);
+    let shell_name = shell_path.file_name().and_then(|f| f.to_str());
 
     // What we're doing here is to spawn a shell and then `cd` into
     // the project directory to get the env in there as if the user
@@ -304,27 +267,34 @@ async fn load_shell_environment(
     //
     // We still don't know why `$SHELL -l -i -c '/usr/bin/env -0'`  would
     // do that, but it does, and `exit 0` helps.
-    let additional_command = PathBuf::from(&shell)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .and_then(|shell| match shell {
-            "fish" => Some("emit fish_prompt;"),
-            _ => None,
-        });
 
-    let command = format!(
-        "cd '{}';{} printf '%s' {marker}; /usr/bin/env; exit 0;",
-        dir.display(),
-        additional_command.unwrap_or("")
-    );
+    let command = match shell_name {
+        Some("fish") => format!(
+            "cd '{}'; emit fish_prompt; printf '%s' {MARKER}; /usr/bin/env; exit 0;",
+            dir.display()
+        ),
+        _ => format!(
+            "cd '{}'; printf '%s' {MARKER}; /usr/bin/env; exit 0;",
+            dir.display()
+        ),
+    };
+
+    // csh/tcsh only supports `-l` if it's the only flag. So this won't be a login shell.
+    // Users must rely on vars from `~/.tcshrc` or `~/.cshrc` and not `.login` as a result.
+    let args = match shell_name {
+        Some("tcsh") | Some("csh") => vec!["-i", "-c", &command],
+        _ => vec!["-l", "-i", "-c", &command],
+    };
 
     let Some(output) = smol::process::Command::new(&shell)
-        .args(["-l", "-i", "-c", &command])
+        .args(&args)
         .output()
         .await
         .log_err()
     else {
-        return message("Failed to spawn login shell to source login environment variables. See logs for details");
+        return message(
+            "Failed to spawn login shell to source login environment variables. See logs for details",
+        );
     };
 
     if !output.status.success() {
@@ -333,7 +303,7 @@ async fn load_shell_environment(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let Some(env_output_start) = stdout.find(marker) else {
+    let Some(env_output_start) = stdout.find(MARKER) else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         log::error!(
             "failed to parse output of `env` command in login shell. stdout: {:?}, stderr: {:?}",
@@ -344,7 +314,7 @@ async fn load_shell_environment(
     };
 
     let mut parsed_env = HashMap::default();
-    let env_output = &stdout[env_output_start + marker.len()..];
+    let env_output = &stdout[env_output_start + MARKER.len()..];
 
     parse_env_output(env_output, |key, value| {
         parsed_env.insert(key, value);
@@ -366,4 +336,48 @@ async fn load_shell_environment(
     }
 
     (Some(parsed_env), direnv_error)
+}
+
+fn get_directory_env(
+    abs_path: Arc<Path>,
+    cx: &Context<ProjectEnvironment>,
+) -> Task<Option<HashMap<String, String>>> {
+    let load_direnv = ProjectSettings::get_global(cx).load_direnv.clone();
+
+    cx.spawn(async move |this, cx| {
+        let (mut shell_env, error_message) = cx
+            .background_spawn({
+                let abs_path = abs_path.clone();
+                async move { load_directory_shell_environment(&abs_path, &load_direnv).await }
+            })
+            .await;
+
+        if let Some(shell_env) = shell_env.as_mut() {
+            let path = shell_env
+                .get("PATH")
+                .map(|path| path.as_str())
+                .unwrap_or_default();
+            log::info!(
+                "using project environment variables shell launched in {:?}. PATH={:?}",
+                abs_path,
+                path
+            );
+
+            set_origin_marker(shell_env, EnvironmentOrigin::WorktreeShell);
+        }
+
+        if let Some(error) = error_message {
+            this.update(cx, |this, cx| {
+                log::error!(
+                    "error fetching environment for path {abs_path:?}: {}",
+                    error
+                );
+                this.environment_error_messages.insert(abs_path, error);
+                cx.emit(ProjectEnvironmentEvent::ErrorsUpdated)
+            })
+            .log_err();
+        }
+
+        shell_env
+    })
 }

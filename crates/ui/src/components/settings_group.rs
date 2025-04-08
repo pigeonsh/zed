@@ -1,9 +1,7 @@
-#![allow(missing_docs)]
-
 use gpui::AnyElement;
 use smallvec::SmallVec;
 
-use crate::{prelude::*, ListHeader};
+use crate::{ListHeader, prelude::*};
 
 /// A group of settings.
 #[derive(IntoElement)]

@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use assistant_slash_command::{
     ArgumentCompletion, SlashCommand, SlashCommandOutput, SlashCommandOutputSection,
     SlashCommandResult,
 };
 use gpui::{Task, WeakEntity};
 use language::{BufferSnapshot, LspAdapterDelegate};
-use prompt_library::PromptStore;
-use std::sync::{atomic::AtomicBool, Arc};
+use prompt_store::PromptStore;
+use std::sync::{Arc, atomic::AtomicBool};
 use ui::prelude::*;
 use workspace::Workspace;
 
@@ -43,7 +43,7 @@ impl SlashCommand for PromptSlashCommand {
     ) -> Task<Result<Vec<ArgumentCompletion>>> {
         let store = PromptStore::global(cx);
         let query = arguments.to_owned().join(" ");
-        cx.background_executor().spawn(async move {
+        cx.background_spawn(async move {
             let prompts = store.await?.search(query).await;
             Ok(prompts
                 .into_iter()
@@ -77,7 +77,7 @@ impl SlashCommand for PromptSlashCommand {
 
         let store = PromptStore::global(cx);
         let title = SharedString::from(title.clone());
-        let prompt = cx.background_executor().spawn({
+        let prompt = cx.background_spawn({
             let title = title.clone();
             async move {
                 let store = store.await?;

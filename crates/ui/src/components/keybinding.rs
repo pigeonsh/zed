@@ -1,9 +1,8 @@
-#![allow(missing_docs)]
 use crate::PlatformStyle;
-use crate::{h_flex, prelude::*, Icon, IconName, IconSize};
+use crate::{Icon, IconName, IconSize, h_flex, prelude::*};
 use gpui::{
-    relative, Action, AnyElement, App, FocusHandle, Global, IntoElement, Keystroke, Modifiers,
-    Window,
+    Action, AnyElement, App, FocusHandle, Global, IntoElement, Keystroke, Modifiers, Window,
+    relative,
 };
 use itertools::Itertools;
 
@@ -21,6 +20,9 @@ pub struct KeyBinding {
 
     /// Determines whether the keybinding is meant for vim mode.
     vim_mode: bool,
+
+    /// Indicates whether the keybinding is currently disabled.
+    disabled: bool,
 }
 
 struct VimStyle(bool);
@@ -30,11 +32,11 @@ impl KeyBinding {
     /// Returns the highest precedence keybinding for an action. This is the last binding added to
     /// the keymap. User bindings are added after built-in bindings so that they take precedence.
     pub fn for_action(action: &dyn Action, window: &mut Window, cx: &App) -> Option<Self> {
-        let key_binding = window
-            .bindings_for_action(action)
-            .into_iter()
-            .rev()
-            .next()?;
+        if let Some(focused) = window.focused(cx) {
+            return Self::for_action_in(action, &focused, window, cx);
+        }
+        let key_binding =
+            gpui::Keymap::binding_to_display_from_bindings(window.bindings_for_action(action))?;
         Some(Self::new(key_binding, cx))
     }
 
@@ -45,11 +47,9 @@ impl KeyBinding {
         window: &mut Window,
         cx: &App,
     ) -> Option<Self> {
-        let key_binding = window
-            .bindings_for_action_in(action, focus)
-            .into_iter()
-            .rev()
-            .next()?;
+        let key_binding = gpui::Keymap::binding_to_display_from_bindings(
+            window.bindings_for_action_in(action, focus),
+        )?;
         Some(Self::new(key_binding, cx))
     }
 
@@ -67,6 +67,7 @@ impl KeyBinding {
             platform_style: PlatformStyle::platform(),
             size: None,
             vim_mode: KeyBinding::is_vim_mode(cx),
+            disabled: false,
         }
     }
 
@@ -82,6 +83,13 @@ impl KeyBinding {
         self
     }
 
+    /// Sets whether this keybinding is currently disabled.
+    /// Disabled keybinds will be rendered in a dimmed state.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
     pub fn vim_mode(mut self, enabled: bool) -> Self {
         self.vim_mode = enabled;
         self
@@ -92,15 +100,7 @@ impl KeyBinding {
         match key_icon {
             Some(icon) => KeyIcon::new(icon, color).size(self.size).into_any_element(),
             None => {
-                let key = if self.vim_mode {
-                    if keystroke.modifiers.shift && keystroke.key.len() == 1 {
-                        keystroke.key.to_ascii_uppercase().to_string()
-                    } else {
-                        keystroke.key.to_string()
-                    }
-                } else {
-                    util::capitalize(&keystroke.key)
-                };
+                let key = util::capitalize(&keystroke.key);
                 Key::new(&key, color).size(self.size).into_any_element()
             }
         }
@@ -109,6 +109,12 @@ impl KeyBinding {
 
 impl RenderOnce for KeyBinding {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let color = self.disabled.then_some(Color::Disabled);
+        let use_text = self.vim_mode
+            || matches!(
+                self.platform_style,
+                PlatformStyle::Linux | PlatformStyle::Windows
+            );
         h_flex()
             .debug_selector(|| {
                 format!(
@@ -127,16 +133,27 @@ impl RenderOnce for KeyBinding {
                 h_flex()
                     .flex_none()
                     .py_0p5()
-                    .rounded_sm()
+                    .rounded_xs()
                     .text_color(cx.theme().colors().text_muted)
-                    .children(render_modifiers(
-                        &keystroke.modifiers,
-                        self.platform_style,
-                        None,
-                        self.size,
-                        true,
-                    ))
-                    .map(|el| el.child(self.render_key(&keystroke, None)))
+                    .when(use_text, |el| {
+                        el.child(
+                            Key::new(
+                                keystroke_text(&keystroke, self.platform_style, self.vim_mode),
+                                color,
+                            )
+                            .size(self.size),
+                        )
+                    })
+                    .when(!use_text, |el| {
+                        el.children(render_modifiers(
+                            &keystroke.modifiers,
+                            self.platform_style,
+                            color,
+                            self.size,
+                            true,
+                        ))
+                        .map(|el| el.child(self.render_key(&keystroke, color)))
+                    })
             }))
     }
 }
@@ -359,80 +376,75 @@ pub fn text_for_keystroke(keystroke: &Keystroke, cx: &App) -> String {
 }
 
 /// Returns a textual representation of the given [`Keystroke`].
-fn keystroke_text(
-    keystroke: &Keystroke,
-    platform_style: PlatformStyle,
-    vim_enabled: bool,
-) -> String {
+fn keystroke_text(keystroke: &Keystroke, platform_style: PlatformStyle, vim_mode: bool) -> String {
     let mut text = String::new();
 
-    let delimiter = match platform_style {
-        PlatformStyle::Mac => '-',
-        PlatformStyle::Linux | PlatformStyle::Windows => '+',
+    let delimiter = match (platform_style, vim_mode) {
+        (PlatformStyle::Mac, false) => '-',
+        (PlatformStyle::Linux | PlatformStyle::Windows, false) => '-',
+        (_, true) => '-',
     };
 
     if keystroke.modifiers.function {
-        match platform_style {
-            PlatformStyle::Mac => text.push_str("Fn"),
-            PlatformStyle::Linux | PlatformStyle::Windows => text.push_str("Fn"),
+        match vim_mode {
+            false => text.push_str("Fn"),
+            true => text.push_str("fn"),
         }
 
         text.push(delimiter);
     }
 
     if keystroke.modifiers.control {
-        match platform_style {
-            PlatformStyle::Mac => text.push_str("Control"),
-            PlatformStyle::Linux | PlatformStyle::Windows => text.push_str("Ctrl"),
-        }
-
-        text.push(delimiter);
-    }
-
-    if keystroke.modifiers.alt {
-        match platform_style {
-            PlatformStyle::Mac => text.push_str("Option"),
-            PlatformStyle::Linux | PlatformStyle::Windows => text.push_str("Alt"),
+        match (platform_style, vim_mode) {
+            (PlatformStyle::Mac, false) => text.push_str("Control"),
+            (PlatformStyle::Linux | PlatformStyle::Windows, false) => text.push_str("Ctrl"),
+            (_, true) => text.push_str("ctrl"),
         }
 
         text.push(delimiter);
     }
 
     if keystroke.modifiers.platform {
-        match platform_style {
-            PlatformStyle::Mac => text.push_str("Command"),
-            PlatformStyle::Linux => text.push_str("Super"),
-            PlatformStyle::Windows => text.push_str("Win"),
+        match (platform_style, vim_mode) {
+            (PlatformStyle::Mac, false) => text.push_str("Command"),
+            (PlatformStyle::Mac, true) => text.push_str("cmd"),
+            (PlatformStyle::Linux, false) => text.push_str("Super"),
+            (PlatformStyle::Linux, true) => text.push_str("super"),
+            (PlatformStyle::Windows, false) => text.push_str("Win"),
+            (PlatformStyle::Windows, true) => text.push_str("win"),
+        }
+
+        text.push(delimiter);
+    }
+
+    if keystroke.modifiers.alt {
+        match (platform_style, vim_mode) {
+            (PlatformStyle::Mac, false) => text.push_str("Option"),
+            (PlatformStyle::Linux | PlatformStyle::Windows, false) => text.push_str("Alt"),
+            (_, true) => text.push_str("alt"),
         }
 
         text.push(delimiter);
     }
 
     if keystroke.modifiers.shift {
-        if !(vim_enabled && keystroke.key.len() == 1) {
-            match platform_style {
-                PlatformStyle::Mac | PlatformStyle::Linux | PlatformStyle::Windows => {
-                    text.push_str("Shift")
-                }
-            }
-            text.push(delimiter);
+        match (platform_style, vim_mode) {
+            (_, false) => text.push_str("Shift"),
+            (_, true) => text.push_str("shift"),
         }
+        text.push(delimiter);
     }
 
-    let key = match keystroke.key.as_str() {
-        "pageup" => "PageUp",
-        "pagedown" => "PageDown",
-        key if vim_enabled => {
-            if !keystroke.modifiers.shift && key.len() == 1 {
-                key
-            } else {
-                &util::capitalize(key)
-            }
-        }
-        key => &util::capitalize(key),
-    };
-
-    text.push_str(key);
+    if vim_mode {
+        text.push_str(&keystroke.key)
+    } else {
+        let key = match keystroke.key.as_str() {
+            "pageup" => "PageUp",
+            "pagedown" => "PageDown",
+            key => &util::capitalize(key),
+        };
+        text.push_str(key);
+    }
 
     text
 }
@@ -457,7 +469,7 @@ mod tests {
                 PlatformStyle::Linux,
                 false
             ),
-            "Super+C".to_string()
+            "Super-C".to_string()
         );
         assert_eq!(
             keystroke_text(
@@ -465,7 +477,7 @@ mod tests {
                 PlatformStyle::Windows,
                 false
             ),
-            "Win+C".to_string()
+            "Win-C".to_string()
         );
 
         assert_eq!(
@@ -482,7 +494,7 @@ mod tests {
                 PlatformStyle::Linux,
                 false
             ),
-            "Ctrl+Alt+Delete".to_string()
+            "Ctrl-Alt-Delete".to_string()
         );
         assert_eq!(
             keystroke_text(
@@ -490,7 +502,7 @@ mod tests {
                 PlatformStyle::Windows,
                 false
             ),
-            "Ctrl+Alt+Delete".to_string()
+            "Ctrl-Alt-Delete".to_string()
         );
 
         assert_eq!(
@@ -507,7 +519,7 @@ mod tests {
                 PlatformStyle::Linux,
                 false,
             ),
-            "Shift+PageUp".to_string()
+            "Shift-PageUp".to_string()
         );
         assert_eq!(
             keystroke_text(
@@ -515,7 +527,7 @@ mod tests {
                 PlatformStyle::Windows,
                 false
             ),
-            "Shift+PageUp".to_string()
+            "Shift-PageUp".to_string()
         );
     }
 }

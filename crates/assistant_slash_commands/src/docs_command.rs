@@ -1,9 +1,9 @@
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use assistant_slash_command::{
     ArgumentCompletion, SlashCommand, SlashCommandOutput, SlashCommandOutputSection,
     SlashCommandResult,
@@ -16,7 +16,7 @@ use indexed_docs::{
 use language::{BufferSnapshot, LspAdapterDelegate};
 use project::{Project, ProjectPath};
 use ui::prelude::*;
-use util::{maybe, ResultExt};
+use util::{ResultExt, maybe};
 use workspace::Workspace;
 
 pub struct DocsSlashCommand;
@@ -176,7 +176,7 @@ impl SlashCommand for DocsSlashCommand {
             .provider()
             .ok_or_else(|| anyhow!("no docs provider specified"))
             .and_then(|provider| IndexedDocsStore::try_global(provider, cx));
-        cx.background_executor().spawn(async move {
+        cx.background_spawn(async move {
             fn build_completions(items: Vec<String>) -> Vec<ArgumentCompletion> {
                 items
                     .into_iter()
@@ -284,7 +284,7 @@ impl SlashCommand for DocsSlashCommand {
 
         let args = DocsSlashCommandArgs::parse(arguments);
         let executor = cx.background_executor().clone();
-        let task = cx.background_executor().spawn({
+        let task = cx.background_spawn({
             let store = args
                 .provider()
                 .ok_or_else(|| anyhow!("no docs provider specified"))

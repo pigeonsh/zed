@@ -6,15 +6,7 @@
     {
       "name": "Gruvbox Dark",
       "appearance": "dark",
-      "accents": [
-        "#cc241dff",
-        "#98971aff",
-        "#d79921ff",
-        "#458588ff",
-        "#b16286ff",
-        "#689d6aff",
-        "#d65d0eff"
-      ],
+      "accents": ["#cc241dff", "#98971aff", "#d79921ff", "#458588ff", "#b16286ff", "#689d6aff", "#d65d0eff"],
       "style": {
         "border": "#5b534dff",
         "border.variant": "#494340ff",
@@ -95,9 +87,9 @@
         "terminal.ansi.blue": "#83a598ff",
         "terminal.ansi.bright_blue": "#414f4aff",
         "terminal.ansi.dim_blue": "#c0d2cbff",
-        "terminal.ansi.magenta": "#a89984ff",
-        "terminal.ansi.bright_magenta": "#514a41ff",
-        "terminal.ansi.dim_magenta": "#d2cabfff",
+        "terminal.ansi.magenta": "#d3869bff",
+        "terminal.ansi.bright_magenta": "#8e5868ff",
+        "terminal.ansi.dim_magenta": "#ff9ebbff",
         "terminal.ansi.cyan": "#8ec07cff",
         "terminal.ansi.bright_cyan": "#45603eff",
         "terminal.ansi.dim_cyan": "#c7dfbdff",
@@ -106,15 +98,8 @@
         "terminal.ansi.dim_white": "#b0a189ff",
         "link_text.hover": "#83a598ff",
         "version_control.added": "#b7bb26ff",
-        "version_control.added_background": "#b7bb2614",
-        "version_control.deleted": "#fb4a35ff",
-        "version_control.deleted_background": "#fb4a3514",
         "version_control.modified": "#f9bd2fff",
-        "version_control.modified_background": "#f9bd2f14",
-        "version_control.renamed": "#83a598ff",
-        "version_control.conflict": "#f9bd2fff",
-        "version_control.conflict_background": "#f9bd2f14",
-        "version_control.ignored": "#998b78ff",
+        "version_control.deleted": "#fb4a35ff",
         "conflict": "#f9bd2fff",
         "conflict.background": "#572e10ff",
         "conflict.border": "#754916ff",
@@ -386,6 +371,11 @@
             "font_weight": null
           },
           "variable": {
+            "color": "#ebdbb2ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "variable.special": {
             "color": "#83a598ff",
             "font_style": null,
             "font_weight": null
@@ -401,15 +391,7 @@
     {
       "name": "Gruvbox Dark Hard",
       "appearance": "dark",
-      "accents": [
-        "#cc241dff",
-        "#98971aff",
-        "#d79921ff",
-        "#458588ff",
-        "#b16286ff",
-        "#689d6aff",
-        "#d65d0eff"
-      ],
+      "accents": ["#cc241dff", "#98971aff", "#d79921ff", "#458588ff", "#b16286ff", "#689d6aff", "#d65d0eff"],
       "style": {
         "border": "#5b534dff",
         "border.variant": "#494340ff",
@@ -490,9 +472,9 @@
         "terminal.ansi.blue": "#83a598ff",
         "terminal.ansi.bright_blue": "#414f4aff",
         "terminal.ansi.dim_blue": "#c0d2cbff",
-        "terminal.ansi.magenta": "#a89984ff",
-        "terminal.ansi.bright_magenta": "#514a41ff",
-        "terminal.ansi.dim_magenta": "#d2cabfff",
+        "terminal.ansi.magenta": "#d3869bff",
+        "terminal.ansi.bright_magenta": "#8e5868ff",
+        "terminal.ansi.dim_magenta": "#ff9ebbff",
         "terminal.ansi.cyan": "#8ec07cff",
         "terminal.ansi.bright_cyan": "#45603eff",
         "terminal.ansi.dim_cyan": "#c7dfbdff",
@@ -501,15 +483,8 @@
         "terminal.ansi.dim_white": "#b0a189ff",
         "link_text.hover": "#83a598ff",
         "version_control.added": "#b7bb26ff",
-        "version_control.added_background": "#b7bb2614",
-        "version_control.deleted": "#fb4a35ff",
-        "version_control.deleted_background": "#fb4a3514",
         "version_control.modified": "#f9bd2fff",
-        "version_control.modified_background": "#f9bd2f14",
-        "version_control.renamed": "#83a598ff",
-        "version_control.conflict": "#f9bd2fff",
-        "version_control.conflict_background": "#f9bd2f14",
-        "version_control.ignored": "#998b78ff",
+        "version_control.deleted": "#fb4a35ff",
         "conflict": "#f9bd2fff",
         "conflict.background": "#572e10ff",
         "conflict.border": "#754916ff",
@@ -781,6 +756,11 @@
             "font_weight": null
           },
           "variable": {
+            "color": "#ebdbb2ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "variable.special": {
             "color": "#83a598ff",
             "font_style": null,
             "font_weight": null
@@ -796,15 +776,7 @@
     {
       "name": "Gruvbox Dark Soft",
       "appearance": "dark",
-      "accents": [
-        "#cc241dff",
-        "#98971aff",
-        "#d79921ff",
-        "#458588ff",
-        "#b16286ff",
-        "#689d6aff",
-        "#d65d0eff"
-      ],
+      "accents": ["#cc241dff", "#98971aff", "#d79921ff", "#458588ff", "#b16286ff", "#689d6aff", "#d65d0eff"],
       "style": {
         "border": "#5b534dff",
         "border.variant": "#494340ff",
@@ -885,9 +857,9 @@
         "terminal.ansi.blue": "#83a598ff",
         "terminal.ansi.bright_blue": "#414f4aff",
         "terminal.ansi.dim_blue": "#c0d2cbff",
-        "terminal.ansi.magenta": "#a89984ff",
-        "terminal.ansi.bright_magenta": "#514a41ff",
-        "terminal.ansi.dim_magenta": "#d2cabfff",
+        "terminal.ansi.magenta": "#d3869bff",
+        "terminal.ansi.bright_magenta": "#8e5868ff",
+        "terminal.ansi.dim_magenta": "#ff9ebbff",
         "terminal.ansi.cyan": "#8ec07cff",
         "terminal.ansi.bright_cyan": "#45603eff",
         "terminal.ansi.dim_cyan": "#c7dfbdff",
@@ -896,15 +868,8 @@
         "terminal.ansi.dim_white": "#b0a189ff",
         "link_text.hover": "#83a598ff",
         "version_control.added": "#b7bb26ff",
-        "version_control.added_background": "#b7bb2614",
-        "version_control.deleted": "#fb4a35ff",
-        "version_control.deleted_background": "#fb4a3514",
         "version_control.modified": "#f9bd2fff",
-        "version_control.modified_background": "#f9bd2f14",
-        "version_control.renamed": "#83a598ff",
-        "version_control.conflict": "#f9bd2fff",
-        "version_control.conflict_background": "#f9bd2f14",
-        "version_control.ignored": "#998b78ff",
+        "version_control.deleted": "#fb4a35ff",
         "conflict": "#f9bd2fff",
         "conflict.background": "#572e10ff",
         "conflict.border": "#754916ff",
@@ -1176,6 +1141,11 @@
             "font_weight": null
           },
           "variable": {
+            "color": "#ebdbb2ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "variable.special": {
             "color": "#83a598ff",
             "font_style": null,
             "font_weight": null
@@ -1191,15 +1161,7 @@
     {
       "name": "Gruvbox Light",
       "appearance": "light",
-      "accents": [
-        "#cc241dff",
-        "#98971aff",
-        "#d79921ff",
-        "#458588ff",
-        "#b16286ff",
-        "#689d6aff",
-        "#d65d0eff"
-      ],
+      "accents": ["#cc241dff", "#98971aff", "#d79921ff", "#458588ff", "#b16286ff", "#689d6aff", "#d65d0eff"],
       "style": {
         "border": "#c8b899ff",
         "border.variant": "#ddcca7ff",
@@ -1280,9 +1242,9 @@
         "terminal.ansi.blue": "#0b6678ff",
         "terminal.ansi.bright_blue": "#8fb0baff",
         "terminal.ansi.dim_blue": "#14333bff",
-        "terminal.ansi.magenta": "#7c6f64ff",
-        "terminal.ansi.bright_magenta": "#bcb5afff",
-        "terminal.ansi.dim_magenta": "#3e3833ff",
+        "terminal.ansi.magenta": "#8f3e71ff",
+        "terminal.ansi.bright_magenta": "#c76da0ff",
+        "terminal.ansi.dim_magenta": "#5c2848ff",
         "terminal.ansi.cyan": "#437b59ff",
         "terminal.ansi.bright_cyan": "#9fbca8ff",
         "terminal.ansi.dim_cyan": "#253e2eff",
@@ -1290,16 +1252,9 @@
         "terminal.ansi.bright_white": "#282828ff",
         "terminal.ansi.dim_white": "#73675eff",
         "link_text.hover": "#0b6678ff",
-        "version_control.added": "#79740eff",
-        "version_control.added_background": "#79740e14",
-        "version_control.deleted": "#9d0006ff",
-        "version_control.deleted_background": "#9d000614",
-        "version_control.modified": "#b57614ff",
-        "version_control.modified_background": "#b5761414",
-        "version_control.renamed": "#076678ff",
-        "version_control.conflict": "#b57614ff",
-        "version_control.conflict_background": "#b5761414",
-        "version_control.ignored": "#928374ff",
+        "version_control.added": "#797410ff",
+        "version_control.modified": "#b57615ff",
+        "version_control.deleted": "#9d0308ff",
         "conflict": "#b57615ff",
         "conflict.background": "#f5e2d0ff",
         "conflict.border": "#ebccabff",
@@ -1571,6 +1526,11 @@
             "font_weight": null
           },
           "variable": {
+            "color": "#282828ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "variable.special": {
             "color": "#066578ff",
             "font_style": null,
             "font_weight": null
@@ -1586,15 +1546,7 @@
     {
       "name": "Gruvbox Light Hard",
       "appearance": "light",
-      "accents": [
-        "#cc241dff",
-        "#98971aff",
-        "#d79921ff",
-        "#458588ff",
-        "#b16286ff",
-        "#689d6aff",
-        "#d65d0eff"
-      ],
+      "accents": ["#cc241dff", "#98971aff", "#d79921ff", "#458588ff", "#b16286ff", "#689d6aff", "#d65d0eff"],
       "style": {
         "border": "#c8b899ff",
         "border.variant": "#ddcca7ff",
@@ -1675,9 +1627,9 @@
         "terminal.ansi.blue": "#0b6678ff",
         "terminal.ansi.bright_blue": "#8fb0baff",
         "terminal.ansi.dim_blue": "#14333bff",
-        "terminal.ansi.magenta": "#7c6f64ff",
-        "terminal.ansi.bright_magenta": "#bcb5afff",
-        "terminal.ansi.dim_magenta": "#3e3833ff",
+        "terminal.ansi.magenta": "#8f3e71ff",
+        "terminal.ansi.bright_magenta": "#c76da0ff",
+        "terminal.ansi.dim_magenta": "#5c2848ff",
         "terminal.ansi.cyan": "#437b59ff",
         "terminal.ansi.bright_cyan": "#9fbca8ff",
         "terminal.ansi.dim_cyan": "#253e2eff",
@@ -1685,16 +1637,9 @@
         "terminal.ansi.bright_white": "#282828ff",
         "terminal.ansi.dim_white": "#73675eff",
         "link_text.hover": "#0b6678ff",
-        "version_control.added": "#79740eff",
-        "version_control.added_background": "#79740e14",
-        "version_control.deleted": "#9d0006ff",
-        "version_control.deleted_background": "#9d000614",
-        "version_control.modified": "#b57614ff",
-        "version_control.modified_background": "#b5761414",
-        "version_control.renamed": "#076678ff",
-        "version_control.conflict": "#b57614ff",
-        "version_control.conflict_background": "#b5761414",
-        "version_control.ignored": "#928374ff",
+        "version_control.added": "#797410ff",
+        "version_control.modified": "#b57615ff",
+        "version_control.deleted": "#9d0308ff",
         "conflict": "#b57615ff",
         "conflict.background": "#f5e2d0ff",
         "conflict.border": "#ebccabff",
@@ -1966,6 +1911,11 @@
             "font_weight": null
           },
           "variable": {
+            "color": "#282828ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "variable.special": {
             "color": "#066578ff",
             "font_style": null,
             "font_weight": null
@@ -1981,15 +1931,7 @@
     {
       "name": "Gruvbox Light Soft",
       "appearance": "light",
-      "accents": [
-        "#cc241dff",
-        "#98971aff",
-        "#d79921ff",
-        "#458588ff",
-        "#b16286ff",
-        "#689d6aff",
-        "#d65d0eff"
-      ],
+      "accents": ["#cc241dff", "#98971aff", "#d79921ff", "#458588ff", "#b16286ff", "#689d6aff", "#d65d0eff"],
       "style": {
         "border": "#c8b899ff",
         "border.variant": "#ddcca7ff",
@@ -2070,9 +2012,9 @@
         "terminal.ansi.blue": "#0b6678ff",
         "terminal.ansi.bright_blue": "#8fb0baff",
         "terminal.ansi.dim_blue": "#14333bff",
-        "terminal.ansi.magenta": "#7c6f64ff",
-        "terminal.ansi.bright_magenta": "#bcb5afff",
-        "terminal.ansi.dim_magenta": "#3e3833ff",
+        "terminal.ansi.magenta": "#8f3e71ff",
+        "terminal.ansi.bright_magenta": "#c76da0ff",
+        "terminal.ansi.dim_magenta": "#5c2848ff",
         "terminal.ansi.cyan": "#437b59ff",
         "terminal.ansi.bright_cyan": "#9fbca8ff",
         "terminal.ansi.dim_cyan": "#253e2eff",
@@ -2080,16 +2022,9 @@
         "terminal.ansi.bright_white": "#282828ff",
         "terminal.ansi.dim_white": "#73675eff",
         "link_text.hover": "#0b6678ff",
-        "version_control.added": "#79740eff",
-        "version_control.added_background": "#79740e14",
-        "version_control.deleted": "#9d0006ff",
-        "version_control.deleted_background": "#9d000614",
-        "version_control.modified": "#b57614ff",
-        "version_control.modified_background": "#b5761414",
-        "version_control.renamed": "#076678ff",
-        "version_control.conflict": "#b57614ff",
-        "version_control.conflict_background": "#b5761414",
-        "version_control.ignored": "#928374ff",
+        "version_control.added": "#797410ff",
+        "version_control.modified": "#b57615ff",
+        "version_control.deleted": "#9d0308ff",
         "conflict": "#b57615ff",
         "conflict.background": "#f5e2d0ff",
         "conflict.border": "#ebccabff",
@@ -2361,6 +2296,11 @@
             "font_weight": null
           },
           "variable": {
+            "color": "#282828ff",
+            "font_style": null,
+            "font_weight": null
+          },
+          "variable.special": {
             "color": "#066578ff",
             "font_style": null,
             "font_weight": null

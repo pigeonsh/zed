@@ -1,6 +1,6 @@
 //! This module contains all actions supported by [`Editor`].
 use super::*;
-use gpui::{action_as, action_with_deprecated_aliases};
+use gpui::{action_as, action_with_deprecated_aliases, actions};
 use schemars::JsonSchema;
 use util::serde::default_true;
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema)]
@@ -22,6 +22,8 @@ pub struct SelectPrevious {
 pub struct MoveToBeginningOfLine {
     #[serde(default = "default_true")]
     pub stop_at_soft_wraps: bool,
+    #[serde(default)]
+    pub stop_at_indent: bool,
 }
 
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema)]
@@ -29,6 +31,15 @@ pub struct MoveToBeginningOfLine {
 pub struct SelectToBeginningOfLine {
     #[serde(default)]
     pub(super) stop_at_soft_wraps: bool,
+    #[serde(default)]
+    pub stop_at_indent: bool,
+}
+
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteToBeginningOfLine {
+    #[serde(default)]
+    pub(super) stop_at_indent: bool,
 }
 
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema)]
@@ -208,6 +219,7 @@ impl_actions!(
         ComposeCompletion,
         ConfirmCodeAction,
         ConfirmCompletion,
+        DeleteToBeginningOfLine,
         DeleteToNextWordEnd,
         DeleteToPreviousWordStart,
         ExpandExcerpts,
@@ -236,7 +248,7 @@ impl_actions!(
     ]
 );
 
-gpui::actions!(
+actions!(
     editor,
     [
         AcceptEditPrediction,
@@ -253,7 +265,7 @@ gpui::actions!(
         ContextMenuFirst,
         ContextMenuLast,
         ContextMenuNext,
-        ContextMenuPrev,
+        ContextMenuPrevious,
         ConvertToKebabCase,
         ConvertToLowerCamelCase,
         ConvertToLowerCase,
@@ -262,7 +274,10 @@ gpui::actions!(
         ConvertToTitleCase,
         ConvertToUpperCamelCase,
         ConvertToUpperCase,
+        ConvertToRot13,
+        ConvertToRot47,
         Copy,
+        CopyAndTrim,
         CopyFileLocation,
         CopyHighlightJson,
         CopyFileName,
@@ -272,7 +287,6 @@ gpui::actions!(
         CutToEndOfLine,
         Delete,
         DeleteLine,
-        DeleteToBeginningOfLine,
         DeleteToEndOfLine,
         DeleteToNextSubwordEnd,
         DeleteToPreviousSubwordStart,
@@ -280,7 +294,6 @@ gpui::actions!(
         DuplicateLineDown,
         DuplicateLineUp,
         DuplicateSelection,
-        ExpandAllHunkDiffs,
         ExpandMacroRecursively,
         FindAllReferences,
         Fold,
@@ -298,10 +311,10 @@ gpui::actions!(
         GoToDefinitionSplit,
         GoToDiagnostic,
         GoToHunk,
+        GoToPreviousHunk,
         GoToImplementation,
         GoToImplementationSplit,
-        GoToPrevDiagnostic,
-        GoToPrevHunk,
+        GoToPreviousDiagnostic,
         GoToTypeDefinition,
         GoToTypeDefinitionSplit,
         HalfPageDown,
@@ -329,6 +342,10 @@ gpui::actions!(
         MoveToPreviousSubwordStart,
         MoveToPreviousWordStart,
         MoveToStartOfParagraph,
+        MoveToStartOfExcerpt,
+        MoveToStartOfNextExcerpt,
+        MoveToEndOfExcerpt,
+        MoveToEndOfPreviousExcerpt,
         MoveUp,
         Newline,
         NewlineAbove,
@@ -343,6 +360,7 @@ gpui::actions!(
         OpenPermalinkToLine,
         OpenSelectionsInMultibuffer,
         OpenUrl,
+        OrganizeImports,
         Outdent,
         AutoIndent,
         PageDown,
@@ -357,7 +375,6 @@ gpui::actions!(
         ReverseLines,
         RevertFile,
         ReloadFile,
-        RevertSelectedHunks,
         Rewrap,
         ScrollCursorBottom,
         ScrollCursorCenter,
@@ -365,6 +382,10 @@ gpui::actions!(
         ScrollCursorTop,
         SelectAll,
         SelectAllMatches,
+        SelectToStartOfExcerpt,
+        SelectToStartOfNextExcerpt,
+        SelectToEndOfExcerpt,
+        SelectToEndOfPreviousExcerpt,
         SelectDown,
         SelectEnclosingSymbol,
         SelectLargerSyntaxNode,
@@ -386,21 +407,27 @@ gpui::actions!(
         ShowCharacterPalette,
         ShowEditPrediction,
         ShowSignatureHelp,
+        ShowWordCompletions,
         ShuffleLines,
         SortLinesCaseInsensitive,
         SortLinesCaseSensitive,
         SplitSelectionIntoLines,
+        StopLanguageServer,
         SwitchSourceHeader,
         Tab,
-        TabPrev,
+        Backtab,
+        ToggleBreakpoint,
+        DisableBreakpoint,
+        EnableBreakpoint,
+        EditLogBreakpoint,
         ToggleAutoSignatureHelp,
-        ToggleGitBlame,
         ToggleGitBlameInline,
+        OpenGitBlameCommit,
         ToggleIndentGuides,
         ToggleInlayHints,
+        ToggleInlineDiagnostics,
         ToggleEditPrediction,
         ToggleLineNumbers,
-        ToggleStagedSelectedDiffHunks,
         SwapSelectionEnds,
         SetMark,
         ToggleRelativeLineNumbers,
@@ -422,3 +449,4 @@ action_as!(go_to_line, ToggleGoToLine as Toggle);
 
 action_with_deprecated_aliases!(editor, OpenSelectedFilename, ["editor::OpenFile"]);
 action_with_deprecated_aliases!(editor, ToggleSelectedDiffHunks, ["editor::ToggleHunkDiff"]);
+action_with_deprecated_aliases!(editor, ExpandAllDiffHunks, ["editor::ExpandAllHunkDiffs"]);

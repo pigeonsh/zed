@@ -2,37 +2,33 @@ mod completion_diff_element;
 mod init;
 mod input_excerpt;
 mod license_detection;
-mod onboarding_banner;
 mod onboarding_modal;
 mod onboarding_telemetry;
 mod rate_completion_modal;
 
 pub(crate) use completion_diff_element::*;
 use db::kvp::KEY_VALUE_STORE;
-use editor::Editor;
 pub use init::*;
 use inline_completion::DataCollectionState;
-pub use license_detection::is_license_eligible_for_data_collection;
 use license_detection::LICENSE_FILES_TO_CHECK;
-pub use onboarding_banner::*;
+pub use license_detection::is_license_eligible_for_data_collection;
 pub use rate_completion_modal::*;
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use arrayvec::ArrayVec;
 use client::{Client, UserStore};
 use collections::{HashMap, HashSet, VecDeque};
 use futures::AsyncReadExt;
 use gpui::{
-    actions, App, AppContext as _, AsyncApp, Context, Entity, EntityId, Global, SemanticVersion,
-    Subscription, Task,
+    App, AppContext as _, AsyncApp, Context, Entity, EntityId, Global, SemanticVersion,
+    Subscription, Task, WeakEntity, actions,
 };
 use http_client::{HttpClient, Method};
 use input_excerpt::excerpt_for_cursor_position;
 use language::{
-    Anchor, Buffer, BufferSnapshot, CharClassifier, CharKind, EditPreview, OffsetRangeExt,
-    ToOffset, ToPoint,
+    Anchor, Buffer, BufferSnapshot, EditPreview, OffsetRangeExt, ToOffset, ToPoint, text_diff,
 };
-use language_models::LlmApiToken;
+use language_model::{LlmApiToken, RefreshLlmTokenListener};
 use postage::watch;
 use project::Project;
 use release_channel::AppVersion;
@@ -54,12 +50,12 @@ use telemetry_events::InlineCompletionRating;
 use thiserror::Error;
 use util::ResultExt;
 use uuid::Uuid;
-use workspace::notifications::{ErrorMessagePrompt, NotificationId};
 use workspace::Workspace;
+use workspace::notifications::{ErrorMessagePrompt, NotificationId};
 use worktree::Worktree;
 use zed_llm_client::{
-    PredictEditsBody, PredictEditsResponse, EXPIRED_LLM_TOKEN_HEADER_NAME,
-    MINIMUM_REQUIRED_VERSION_HEADER_NAME,
+    EXPIRED_LLM_TOKEN_HEADER_NAME, MINIMUM_REQUIRED_VERSION_HEADER_NAME, PredictEditsBody,
+    PredictEditsResponse,
 };
 
 const CURSOR_MARKER: &'static str = "<|user_cursor_is_here|>";
@@ -169,11 +165,7 @@ fn interpolate(
 
     edits.extend(model_edits.cloned());
 
-    if edits.is_empty() {
-        None
-    } else {
-        Some(edits)
-    }
+    if edits.is_empty() { None } else { Some(edits) }
 }
 
 impl std::fmt::Debug for InlineCompletion {
@@ -187,7 +179,7 @@ impl std::fmt::Debug for InlineCompletion {
 }
 
 pub struct Zeta {
-    editor: Option<Entity<Editor>>,
+    workspace: Option<WeakEntity<Workspace>>,
     client: Arc<Client>,
     events: VecDeque<Event>,
     registered_buffers: HashMap<gpui::EntityId, RegisteredBuffer>,
@@ -210,14 +202,14 @@ impl Zeta {
     }
 
     pub fn register(
-        editor: Option<Entity<Editor>>,
+        workspace: Option<WeakEntity<Workspace>>,
         worktree: Option<Entity<Worktree>>,
         client: Arc<Client>,
         user_store: Entity<UserStore>,
         cx: &mut App,
     ) -> Entity<Self> {
         let this = Self::global(cx).unwrap_or_else(|| {
-            let entity = cx.new(|cx| Self::new(editor, client, user_store, cx));
+            let entity = cx.new(|cx| Self::new(workspace, client, user_store, cx));
             cx.set_global(ZetaGlobal(entity.clone()));
             entity
         });
@@ -240,18 +232,18 @@ impl Zeta {
     }
 
     fn new(
-        editor: Option<Entity<Editor>>,
+        workspace: Option<WeakEntity<Workspace>>,
         client: Arc<Client>,
         user_store: Entity<UserStore>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let refresh_llm_token_listener = language_models::RefreshLlmTokenListener::global(cx);
+        let refresh_llm_token_listener = RefreshLlmTokenListener::global(cx);
 
         let data_collection_choice = Self::load_data_collection_choices();
         let data_collection_choice = cx.new(|_| data_collection_choice);
 
         Self {
-            editor,
+            workspace,
             client,
             events: VecDeque::new(),
             shown_completions: VecDeque::new(),
@@ -264,7 +256,7 @@ impl Zeta {
                 |this, _listener, _event, cx| {
                     let client = this.client.clone();
                     let llm_token = this.llm_token.clone();
-                    cx.spawn(|_this, _cx| async move {
+                    cx.spawn(async move |_this, _cx| {
                         llm_token.refresh(&client).await?;
                         anyhow::Ok(())
                     })
@@ -355,7 +347,6 @@ impl Zeta {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn request_completion_impl<F, R>(
         &mut self,
         workspace: Option<Entity<Workspace>>,
@@ -408,7 +399,7 @@ impl Zeta {
             None
         };
 
-        cx.spawn(|_, cx| async move {
+        cx.spawn(async move |_, cx| {
             let request_sent_at = Instant::now();
 
             struct BackgroundValues {
@@ -420,8 +411,7 @@ impl Zeta {
             }
 
             let values = cx
-                .background_executor()
-                .spawn({
+                .background_spawn({
                     let snapshot = snapshot.clone();
                     let path = path.clone();
                     async move {
@@ -492,8 +482,8 @@ impl Zeta {
                                         NotificationId::unique::<ZedUpdateRequiredError>(),
                                         cx,
                                         |cx| {
-                                            cx.new(|_| {
-                                                ErrorMessagePrompt::new(err.to_string())
+                                            cx.new(|cx| {
+                                                ErrorMessagePrompt::new(err.to_string(), cx)
                                                     .with_link_button(
                                                         "Update Zed",
                                                         "https://zed.dev/releases",
@@ -670,12 +660,12 @@ and then another
             ),
         ];
 
-        cx.spawn(|zeta, mut cx| async move {
+        cx.spawn(async move |zeta, cx| {
             for task in completion_tasks {
                 task.await.unwrap();
             }
 
-            zeta.update(&mut cx, |zeta, _cx| {
+            zeta.update(cx, |zeta, _cx| {
                 zeta.shown_completions.get_mut(2).unwrap().edits = Arc::new([]);
                 zeta.shown_completions.get_mut(3).unwrap().edits = Arc::new([]);
             })
@@ -708,9 +698,9 @@ and then another
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<InlineCompletion>>> {
         let workspace = self
-            .editor
+            .workspace
             .as_ref()
-            .and_then(|editor| editor.read(cx).workspace());
+            .and_then(|workspace| workspace.upgrade());
         self.request_completion_impl(
             workspace,
             project,
@@ -794,7 +784,6 @@ and then another
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn process_completion_response(
         prediction_response: PredictEditsResponse,
         buffer: Entity<Buffer>,
@@ -811,12 +800,11 @@ and then another
         let snapshot = snapshot.clone();
         let request_id = prediction_response.request_id;
         let output_excerpt = prediction_response.output_excerpt;
-        cx.spawn(|cx| async move {
+        cx.spawn(async move |cx| {
             let output_excerpt: Arc<str> = output_excerpt.into();
 
             let edits: Arc<[(Range<Anchor>, String)]> = cx
-                .background_executor()
-                .spawn({
+                .background_spawn({
                     let output_excerpt = output_excerpt.clone();
                     let editable_range = editable_range.clone();
                     let snapshot = snapshot.clone();
@@ -825,7 +813,7 @@ and then another
                 .await?
                 .into();
 
-            let Some((edits, snapshot, edit_preview)) = buffer.read_with(&cx, {
+            let Some((edits, snapshot, edit_preview)) = buffer.read_with(cx, {
                 let edits = edits.clone();
                 |buffer, cx| {
                     let new_snapshot = buffer.snapshot();
@@ -921,77 +909,18 @@ and then another
         offset: usize,
         snapshot: &BufferSnapshot,
     ) -> Vec<(Range<Anchor>, String)> {
-        fn tokenize(text: &str) -> Vec<&str> {
-            let classifier = CharClassifier::new(None).for_completion(true);
-            let mut chars = text.chars().peekable();
-            let mut prev_ch = chars.peek().copied();
-            let mut tokens = Vec::new();
-            let mut start = 0;
-            let mut end = 0;
-            while let Some(ch) = chars.next() {
-                let prev_kind = prev_ch.map(|ch| classifier.kind(ch));
-                let kind = classifier.kind(ch);
-                if Some(kind) != prev_kind || (kind == CharKind::Punctuation && Some(ch) != prev_ch)
-                {
-                    tokens.push(&text[start..end]);
-                    start = end;
-                }
-                end += ch.len_utf8();
-                prev_ch = Some(ch);
-            }
-            tokens.push(&text[start..end]);
-            tokens
-        }
-
-        let old_tokens = tokenize(&old_text);
-        let new_tokens = tokenize(new_text);
-
-        let diff = similar::TextDiffConfig::default()
-            .algorithm(similar::Algorithm::Patience)
-            .diff_slices(&old_tokens, &new_tokens);
-        let mut edits: Vec<(Range<usize>, String)> = Vec::new();
-        let mut old_start = offset;
-        for change in diff.iter_all_changes() {
-            let value = change.value();
-            match change.tag() {
-                similar::ChangeTag::Equal => {
-                    old_start += value.len();
-                }
-                similar::ChangeTag::Delete => {
-                    let old_end = old_start + value.len();
-                    if let Some((last_old_range, _)) = edits.last_mut() {
-                        if last_old_range.end == old_start {
-                            last_old_range.end = old_end;
-                        } else {
-                            edits.push((old_start..old_end, String::new()));
-                        }
-                    } else {
-                        edits.push((old_start..old_end, String::new()));
-                    }
-                    old_start = old_end;
-                }
-                similar::ChangeTag::Insert => {
-                    if let Some((last_old_range, last_new_text)) = edits.last_mut() {
-                        if last_old_range.end == old_start {
-                            last_new_text.push_str(value);
-                        } else {
-                            edits.push((old_start..old_start, value.into()));
-                        }
-                    } else {
-                        edits.push((old_start..old_start, value.into()));
-                    }
-                }
-            }
-        }
-
-        edits
+        text_diff(&old_text, &new_text)
             .into_iter()
             .map(|(mut old_range, new_text)| {
+                old_range.start += offset;
+                old_range.end += offset;
+
                 let prefix_len = common_prefix(
                     snapshot.chars_for_range(old_range.clone()),
                     new_text.chars(),
                 );
                 old_range.start += prefix_len;
+
                 let suffix_len = common_prefix(
                     snapshot.reversed_chars_for_range(old_range.clone()),
                     new_text[prefix_len..].chars().rev(),
@@ -1129,7 +1058,7 @@ impl LicenseDetectionWatcher {
                 .map(|file| worktree.load_file(file, cx))
                 .collect::<ArrayVec<_, { LICENSE_FILES_TO_CHECK.len() }>>();
 
-            cx.background_executor().spawn(async move {
+            cx.background_spawn(async move {
                 for loaded_file in loaded_files.into_iter() {
                     let Ok(loaded_file) = loaded_file.await else {
                         continue;
@@ -1250,10 +1179,7 @@ impl Event {
                     writeln!(prompt, "User renamed {:?} to {:?}\n", old_path, new_path).unwrap();
                 }
 
-                let diff =
-                    similar::TextDiff::from_lines(&old_snapshot.text(), &new_snapshot.text())
-                        .unified_diff()
-                        .to_string();
+                let diff = language::unified_diff(&old_snapshot.text(), &new_snapshot.text());
                 if !diff.is_empty() {
                     write!(
                         prompt,
@@ -1525,14 +1451,14 @@ impl inline_completion::EditPredictionProvider for ZetaInlineCompletionProvider 
         let can_collect_data = self.provider_data_collection.can_collect_data(cx);
         let last_request_timestamp = self.last_request_timestamp;
 
-        let task = cx.spawn(|this, mut cx| async move {
+        let task = cx.spawn(async move |this, cx| {
             if let Some(timeout) = (last_request_timestamp + Self::THROTTLE_TIMEOUT)
                 .checked_duration_since(Instant::now())
             {
                 cx.background_executor().timer(timeout).await;
             }
 
-            let completion_request = this.update(&mut cx, |this, cx| {
+            let completion_request = this.update(cx, |this, cx| {
                 this.last_request_timestamp = Instant::now();
                 this.zeta.update(cx, |zeta, cx| {
                     zeta.request_completion(
@@ -1562,7 +1488,7 @@ impl inline_completion::EditPredictionProvider for ZetaInlineCompletionProvider 
                 .log_err()
                 .flatten()
             else {
-                this.update(&mut cx, |this, cx| {
+                this.update(cx, |this, cx| {
                     if this.pending_completions[0].id == pending_completion_id {
                         this.pending_completions.remove(0);
                     } else {
@@ -1575,7 +1501,7 @@ impl inline_completion::EditPredictionProvider for ZetaInlineCompletionProvider 
                 return;
             };
 
-            this.update(&mut cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 if this.pending_completions[0].id == pending_completion_id {
                     this.pending_completions.remove(0);
                 } else {
@@ -1714,7 +1640,6 @@ mod tests {
     use http_client::FakeHttpClient;
     use indoc::indoc;
     use language::Point;
-    use language_models::RefreshLlmTokenListener;
     use rpc::proto;
     use settings::SettingsStore;
 

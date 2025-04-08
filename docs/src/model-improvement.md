@@ -4,7 +4,7 @@
 
 When using the Zed Assistant, Zed does not persistently store user content or use user content for training of its models.
 
-When using upstream services through Zed AI, we require similar assurances from our service providers. For example, usage of Anthropic Claude 3.5 via Zed AI in the Asssistant is governed by the [Anthropic Commercial Terms](https://www.anthropic.com/legal/commercial-terms) which includes the following:
+When using upstream services through Zed AI, we require similar assurances from our service providers. For example, usage of Anthropic Claude 3.5 via Zed AI in the Assistant is governed by the [Anthropic Commercial Terms](https://www.anthropic.com/legal/commercial-terms) which includes the following:
 
 > "Anthropic may not train models on Customer Content from paid Services."
 
@@ -74,7 +74,7 @@ Collected data is stored in Snowflake, a private database where we track other m
 
 ### Model Output
 
-We then use this training dataset to fine-tune [Qwen2.5-Coder-7B](https://huggingface.co/Qwen/Qwen2.5-Coder-7B) and make the resulting model available here at [github.com/zed-industries/zeta](https://github.com/zed-industries/zeta) and [huggingface.co/zed-industries/zeta](https://huggingface.co/zed-industries/zeta).
+We then use this training dataset to fine-tune [Qwen2.5-Coder-7B](https://huggingface.co/Qwen/Qwen2.5-Coder-7B) and make the resulting model available at [huggingface.co/zed-industries/zeta](https://huggingface.co/zed-industries/zeta).
 
 ## Applicable terms
 
