@@ -47,8 +47,9 @@ use std::{
 };
 use telemetry::Telemetry;
 use thiserror::Error;
+use tokio::net::TcpStream;
 use url::Url;
-use util::{ResultExt, TryFutureExt};
+use util::{ConnectionResult, ResultExt};
 
 pub use rpc::*;
 pub use telemetry_events::Event;
@@ -104,6 +105,8 @@ impl Settings for ClientSettings {
         }
         Ok(result)
     }
+
+    fn import_from_vscode(_vscode: &settings::VsCodeSettings, _current: &mut Self::FileContent) {}
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, JsonSchema)]
@@ -130,6 +133,10 @@ impl Settings for ProxySettings {
                 .or(sources.default.proxy.clone()),
         })
     }
+
+    fn import_from_vscode(vscode: &settings::VsCodeSettings, current: &mut Self::FileContent) {
+        vscode.string_setting("http.proxy", &mut current.proxy);
+    }
 }
 
 pub fn init_settings(cx: &mut App) {
@@ -144,9 +151,19 @@ pub fn init(client: &Arc<Client>, cx: &mut App) {
         let client = client.clone();
         move |_: &SignIn, cx| {
             if let Some(client) = client.upgrade() {
-                cx.spawn(async move |cx| {
-                    client.authenticate_and_connect(true, &cx).log_err().await
-                })
+                cx.spawn(
+                    async move |cx| match client.authenticate_and_connect(true, &cx).await {
+                        ConnectionResult::Timeout => {
+                            log::error!("Initial authentication timed out");
+                        }
+                        ConnectionResult::ConnectionReset => {
+                            log::error!("Initial authentication connection reset");
+                        }
+                        ConnectionResult::Result(r) => {
+                            r.log_err();
+                        }
+                    },
+                )
                 .detach();
             }
         }
@@ -473,14 +490,14 @@ impl<T: 'static> Drop for PendingEntitySubscription<T> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Deserialize, Debug)]
 pub struct TelemetrySettings {
     pub diagnostics: bool,
     pub metrics: bool,
 }
 
 /// Control what info is collected by Zed.
-#[derive(Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Default, Clone, Serialize, Deserialize, JsonSchema, Debug)]
 pub struct TelemetrySettingsContent {
     /// Send debug info like crash reports.
     ///
@@ -498,25 +515,19 @@ impl settings::Settings for TelemetrySettings {
     type FileContent = TelemetrySettingsContent;
 
     fn load(sources: SettingsSources<Self::FileContent>, _: &mut App) -> Result<Self> {
-        Ok(Self {
-            diagnostics: sources
-                .user
-                .as_ref()
-                .or(sources.server.as_ref())
-                .and_then(|v| v.diagnostics)
-                .unwrap_or(
-                    sources
-                        .default
-                        .diagnostics
-                        .ok_or_else(Self::missing_default)?,
-                ),
-            metrics: sources
-                .user
-                .as_ref()
-                .or(sources.server.as_ref())
-                .and_then(|v| v.metrics)
-                .unwrap_or(sources.default.metrics.ok_or_else(Self::missing_default)?),
-        })
+        sources.json_merge()
+    }
+
+    fn import_from_vscode(vscode: &settings::VsCodeSettings, current: &mut Self::FileContent) {
+        vscode.enum_setting("telemetry.telemetryLevel", &mut current.metrics, |s| {
+            Some(s == "all")
+        });
+        vscode.enum_setting("telemetry.telemetryLevel", &mut current.diagnostics, |s| {
+            Some(matches!(s, "all" | "error" | "crash"))
+        });
+        // we could translate telemetry.telemetryLevel, but just because users didn't want
+        // to send microsoft telemetry doesn't mean they don't want to send it to zed. their
+        // all/error/crash/off correspond to combinations of our "diagnostics" and "metrics".
     }
 }
 
@@ -546,7 +557,7 @@ impl Client {
 
     pub fn production(cx: &mut App) -> Arc<Self> {
         let clock = Arc::new(clock::RealSystemClock);
-        let http = Arc::new(HttpClientWithUrl::new_uri(
+        let http = Arc::new(HttpClientWithUrl::new_url(
             cx.http_client(),
             &ClientSettings::get_global(cx).server_url,
             cx.http_client().proxy().cloned(),
@@ -639,7 +650,7 @@ impl Client {
                 state._reconnect_task = None;
             }
             Status::ConnectionLost => {
-                let this = self.clone();
+                let client = self.clone();
                 state._reconnect_task = Some(cx.spawn(async move |cx| {
                     #[cfg(any(test, feature = "test-support"))]
                     let mut rng = StdRng::seed_from_u64(0);
@@ -647,10 +658,25 @@ impl Client {
                     let mut rng = StdRng::from_entropy();
 
                     let mut delay = INITIAL_RECONNECTION_DELAY;
-                    while let Err(error) = this.authenticate_and_connect(true, &cx).await {
-                        log::error!("failed to connect {}", error);
-                        if matches!(*this.status().borrow(), Status::ConnectionError) {
-                            this.set_status(
+                    loop {
+                        match client.authenticate_and_connect(true, &cx).await {
+                            ConnectionResult::Timeout => {
+                                log::error!("client connect attempt timed out")
+                            }
+                            ConnectionResult::ConnectionReset => {
+                                log::error!("client connect attempt reset")
+                            }
+                            ConnectionResult::Result(r) => {
+                                if let Err(error) = r {
+                                    log::error!("failed to connect: {error}");
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if matches!(*client.status().borrow(), Status::ConnectionError) {
+                            client.set_status(
                                 Status::ReconnectionError {
                                     next_reconnection: Instant::now() + delay,
                                 },
@@ -808,7 +834,7 @@ impl Client {
         self: &Arc<Self>,
         try_provider: bool,
         cx: &AsyncApp,
-    ) -> anyhow::Result<()> {
+    ) -> ConnectionResult<()> {
         let was_disconnected = match *self.status().borrow() {
             Status::SignedOut => true,
             Status::ConnectionError
@@ -817,9 +843,14 @@ impl Client {
             | Status::Reauthenticating { .. }
             | Status::ReconnectionError { .. } => false,
             Status::Connected { .. } | Status::Connecting { .. } | Status::Reconnecting { .. } => {
-                return Ok(());
+                return ConnectionResult::Result(Ok(()));
             }
-            Status::UpgradeRequired => return Err(EstablishConnectionError::UpgradeRequired)?,
+            Status::UpgradeRequired => {
+                return ConnectionResult::Result(
+                    Err(EstablishConnectionError::UpgradeRequired)
+                        .context("client auth and connect"),
+                );
+            }
         };
         if was_disconnected {
             self.set_status(Status::Authenticating, cx);
@@ -843,12 +874,12 @@ impl Client {
                         Ok(creds) => credentials = Some(creds),
                         Err(err) => {
                             self.set_status(Status::ConnectionError, cx);
-                            return Err(err);
+                            return ConnectionResult::Result(Err(err));
                         }
                     }
                 }
                 _ = status_rx.next().fuse() => {
-                    return Err(anyhow!("authentication canceled"));
+                    return ConnectionResult::Result(Err(anyhow!("authentication canceled")));
                 }
             }
         }
@@ -873,10 +904,10 @@ impl Client {
                         }
 
                         futures::select_biased! {
-                            result = self.set_connection(conn, cx).fuse() => result,
+                            result = self.set_connection(conn, cx).fuse() => ConnectionResult::Result(result.context("client auth and connect")),
                             _ = timeout => {
                                 self.set_status(Status::ConnectionError, cx);
-                                Err(anyhow!("timed out waiting on hello message from server"))
+                                ConnectionResult::Timeout
                             }
                         }
                     }
@@ -888,22 +919,22 @@ impl Client {
                             self.authenticate_and_connect(false, cx).await
                         } else {
                             self.set_status(Status::ConnectionError, cx);
-                            Err(EstablishConnectionError::Unauthorized)?
+                            ConnectionResult::Result(Err(EstablishConnectionError::Unauthorized).context("client auth and connect"))
                         }
                     }
                     Err(EstablishConnectionError::UpgradeRequired) => {
                         self.set_status(Status::UpgradeRequired, cx);
-                        Err(EstablishConnectionError::UpgradeRequired)?
+                        ConnectionResult::Result(Err(EstablishConnectionError::UpgradeRequired).context("client auth and connect"))
                     }
                     Err(error) => {
                         self.set_status(Status::ConnectionError, cx);
-                        Err(error)?
+                        ConnectionResult::Result(Err(error).context("client auth and connect"))
                     }
                 }
             }
             _ = &mut timeout => {
                 self.set_status(Status::ConnectionError, cx);
-                Err(anyhow!("timed out trying to establish connection"))
+                ConnectionResult::Timeout
             }
         }
     }
@@ -919,10 +950,7 @@ impl Client {
 
         let peer_id = async {
             log::debug!("waiting for server hello");
-            let message = incoming
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("no hello message received"))?;
+            let message = incoming.next().await.context("no hello message received")?;
             log::debug!("got server hello");
             let hello_message_type_name = message.payload_type_name().to_string();
             let hello = message
@@ -1109,7 +1137,10 @@ impl Client {
             let stream = {
                 let handle = cx.update(|cx| gpui_tokio::Tokio::handle(cx)).ok().unwrap();
                 let _guard = handle.enter();
-                connect_socks_proxy_stream(proxy.as_ref(), rpc_host).await?
+                match proxy {
+                    Some(proxy) => connect_socks_proxy_stream(&proxy, rpc_host).await?,
+                    None => Box::new(TcpStream::connect(rpc_host).await?),
+                }
             };
 
             log::info!("connected to rpc endpoint {}", rpc_url);
@@ -1721,7 +1752,7 @@ mod tests {
             status.next().await,
             Some(Status::ConnectionError { .. })
         ));
-        auth_and_connect.await.unwrap_err();
+        auth_and_connect.await.into_response().unwrap_err();
 
         // Allow the connection to be established.
         let server = FakeServer::for_client(user_id, &client, cx).await;

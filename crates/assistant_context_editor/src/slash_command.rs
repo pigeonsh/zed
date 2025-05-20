@@ -120,7 +120,7 @@ impl SlashCommandCompletionProvider {
                                         ) as Arc<_>
                                     });
                             Some(project::Completion {
-                                old_range: name_range.clone(),
+                                replace_range: name_range.clone(),
                                 documentation: Some(CompletionDocumentation::SingleLine(
                                     command.description().into(),
                                 )),
@@ -219,7 +219,7 @@ impl SlashCommandCompletionProvider {
                             }
 
                             project::Completion {
-                                old_range: if new_argument.replace_previous_arguments {
+                                replace_range: if new_argument.replace_previous_arguments {
                                     argument_range.clone()
                                 } else {
                                     last_argument_range.clone()
@@ -278,8 +278,8 @@ impl CompletionProvider for SlashCommandCompletionProvider {
                         buffer.anchor_after(Point::new(position.row, first_arg_start.start as u32));
                     let arguments = call
                         .arguments
-                        .iter()
-                        .filter_map(|argument| Some(line.get(argument.clone())?.to_string()))
+                        .into_iter()
+                        .filter_map(|argument| Some(line.get(argument)?.to_string()))
                         .collect::<Vec<_>>();
                     let argument_range = first_arg_start..buffer_position;
                     (

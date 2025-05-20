@@ -17,10 +17,7 @@ pub enum ComponentStory {
     CollabNotification,
     ContextMenu,
     Cursor,
-    DefaultColors,
-    Disclosure,
     Focus,
-    Icon,
     IconButton,
     Keybinding,
     List,
@@ -35,7 +32,6 @@ pub enum ComponentStory {
     ToggleButton,
     ViewportUnits,
     WithRemSize,
-    Vector,
 }
 
 impl ComponentStory {
@@ -50,10 +46,7 @@ impl ComponentStory {
                 .into(),
             Self::ContextMenu => cx.new(|_| ui::ContextMenuStory).into(),
             Self::Cursor => cx.new(|_| crate::stories::CursorStory).into(),
-            Self::DefaultColors => DefaultColorsStory::model(cx).into(),
-            Self::Disclosure => cx.new(|_| ui::DisclosureStory).into(),
             Self::Focus => FocusStory::model(window, cx).into(),
-            Self::Icon => cx.new(|_| ui::IconStory).into(),
             Self::IconButton => cx.new(|_| ui::IconButtonStory).into(),
             Self::Keybinding => cx.new(|_| ui::KeybindingStory).into(),
             Self::List => cx.new(|_| ui::ListStory).into(),
@@ -68,7 +61,6 @@ impl ComponentStory {
             Self::ToggleButton => cx.new(|_| ui::ToggleButtonStory).into(),
             Self::ViewportUnits => cx.new(|_| crate::stories::ViewportUnitsStory).into(),
             Self::WithRemSize => cx.new(|_| crate::stories::WithRemSizeStory).into(),
-            Self::Vector => cx.new(|_| ui::VectorStory).into(),
         }
     }
 }
